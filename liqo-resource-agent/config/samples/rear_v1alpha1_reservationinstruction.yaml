@@ -1,0 +1,11 @@
+apiVersion: rear.fluidos.eu/v1alpha1
+kind: ReservationInstruction
+metadata:
+  name: demo-instruction
+  namespace: default
+spec:
+  reservationName: example-reservation
+  targetClusterID: "paris"
+  requestedCPU: "4"
+  requestedMemory: "8Gi"
+  message: "Use paris for 4 CPU / 8Gi Memory"

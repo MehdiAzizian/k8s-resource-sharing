@@ -1,0 +1,90 @@
+# =============================================================================
+# Agent Client Certificate
+# =============================================================================
+# This certificate is used by the agent to authenticate with the broker's
+# HTTP REST API using mTLS.
+#
+# IMPORTANT: The CommonName (CN) is the cluster identifier!
+# The broker extracts the cluster ID from the certificate CN field.
+# This MUST match the --cluster-id flag passed to the agent.
+#
+# Prerequisites:
+#   - The CA issuer (liqo-broker-ca-issuer) must be available
+#   - For agents in different clusters, copy the CA Secret first:
+#
+#     # On broker cluster: export CA secret
+#     kubectl get secret liqo-broker-ca-secret -n cert-manager -o yaml > ca-secret.yaml
+#
+#     # On agent cluster: import CA secret and create issuer
+#     kubectl apply -f ca-secret.yaml
+#     kubectl apply -f issuer.yaml  # ClusterIssuer using the CA
+#
+# The resulting Secret (agent-client-tls) contains:
+#   - tls.crt: Client certificate
+#   - tls.key: Private key
+#   - ca.crt:  CA certificate (for server verification)
+# =============================================================================
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: agent-client-cert
+  namespace: system  # Same namespace as agent deployment
+spec:
+  secretName: agent-client-tls
+
+  # Certificate validity
+  duration: 8760h     # 1 year
+  renewBefore: 720h   # Renew 30 days before expiry
+
+  # =============================================================
+  # CRITICAL: CommonName is the cluster identifier
+  # Change this to match your cluster's ID!
+  # The broker uses this to identify which cluster sent the request.
+  # =============================================================
+  commonName: cluster-1  # <-- CHANGE THIS TO YOUR CLUSTER ID
+  subject:
+    organizations:
+      - LiqoResourceBroker
+
+  # Key usages for client authentication only
+  usages:
+    - client auth
+
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+  # Sign with the broker's CA
+  # If using a different issuer in this cluster, change the name
+  issuerRef:
+    name: liqo-broker-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+---
+# =============================================================================
+# CA Issuer (for agent clusters that don't have access to broker's issuer)
+# =============================================================================
+# If this agent runs in a different cluster than the broker, you need to:
+# 1. Copy the CA secret from broker cluster to this cluster
+# 2. Uncomment and apply this issuer
+#
+# Steps:
+#   # On broker cluster:
+#   kubectl get secret liqo-broker-ca-secret -n cert-manager -o yaml \
+#     | sed 's/namespace: cert-manager/namespace: cert-manager/' > ca-secret.yaml
+#
+#   # On agent cluster:
+#   kubectl create namespace cert-manager  # if not exists
+#   kubectl apply -f ca-secret.yaml
+#   kubectl apply -f agent-certificate.yaml  # with issuer uncommented
+# =============================================================================
+
+# apiVersion: cert-manager.io/v1
+# kind: ClusterIssuer
+# metadata:
+#   name: liqo-broker-ca-issuer
+# spec:
+#   ca:
+#     secretName: liqo-broker-ca-secret

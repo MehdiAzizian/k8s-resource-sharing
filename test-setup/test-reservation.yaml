@@ -1,0 +1,11 @@
+apiVersion: broker.fluidos.eu/v1alpha1
+kind: Reservation
+metadata:
+  name: test-reservation
+  namespace: default
+spec:
+  requesterID: agent-cluster-1
+  requestedResources:
+    cpu: "500m"
+    memory: "512Mi"
+  priority: 10

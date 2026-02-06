@@ -1,0 +1,23 @@
+# Thesis (separate - goes to Overleaf)
+myTESI/
+
+# Go cache
+.gocache/
+
+# Claude
+.claude/
+
+# macOS
+.DS_Store
+
+# Binaries
+bin/
+*.exe
+
+# Test certificates (generated)
+test-setup/certs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
