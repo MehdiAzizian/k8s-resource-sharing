@@ -91,6 +91,9 @@ func (c *Collector) CollectClusterResources(ctx context.Context) (*rearv1alpha1.
 	}
 
 	// Calculate available = allocatable - allocated - reserved
+	// Clamp to zero to avoid advertising negative availability
+	zero := *resource.NewQuantity(0, resource.DecimalSI)
+
 	available := &rearv1alpha1.ResourceQuantities{
 		CPU:    allocatable.CPU.DeepCopy(),
 		Memory: allocatable.Memory.DeepCopy(),
@@ -100,6 +103,13 @@ func (c *Collector) CollectClusterResources(ctx context.Context) (*rearv1alpha1.
 	available.CPU.Sub(reserved.CPU)
 	available.Memory.Sub(reserved.Memory)
 
+	if available.CPU.Cmp(zero) < 0 {
+		available.CPU = *resource.NewQuantity(0, resource.DecimalSI)
+	}
+	if available.Memory.Cmp(zero) < 0 {
+		available.Memory = *resource.NewQuantity(0, resource.BinarySI)
+	}
+
 	if hasGPU && allocatable.GPU != nil {
 		availableGPU := allocatable.GPU.DeepCopy()
 		if allocated.GPU != nil {
@@ -107,6 +117,9 @@ func (c *Collector) CollectClusterResources(ctx context.Context) (*rearv1alpha1.
 		}
 		if reserved.GPU != nil {
 			availableGPU.Sub(*reserved.GPU)
+		}
+		if availableGPU.Cmp(zero) < 0 {
+			availableGPU = *resource.NewQuantity(0, resource.DecimalSI)
 		}
 		available.GPU = &availableGPU
 	}

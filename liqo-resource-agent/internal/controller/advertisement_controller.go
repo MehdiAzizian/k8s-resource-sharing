@@ -118,29 +118,40 @@ func (r *AdvertisementReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		resourceData.Allocated.Memory.String(),
 		resourceData.Available.Memory.String()))
 
-	// Update status to indicate successful publication
-	result, err := r.updateStatus(ctx, advertisement, "Active", true, "Advertisement updated successfully")
+	// Publish to broker and update status accordingly
+	publishErr := r.publishToBroker(ctx, advertisement, clusterID)
+	if publishErr != nil {
+		return r.updateStatus(ctx, advertisement, "Active", false,
+			fmt.Sprintf("Metrics collected but broker unreachable: %v", publishErr))
+	}
 
-	// Publish to broker using new transport abstraction
+	return r.updateStatus(ctx, advertisement, "Active", true, "Advertisement updated and published successfully")
+}
+
+// publishToBroker publishes the advertisement to the broker via the configured transport.
+// Returns nil if no transport is configured (local-only mode).
+func (r *AdvertisementReconciler) publishToBroker(ctx context.Context, advertisement *rearv1alpha1.Advertisement, clusterID string) error {
+	logger := log.FromContext(ctx)
+
 	if r.BrokerCommunicator != nil {
 		advDTO := dto.ToAdvertisementDTO(advertisement)
 		if err := r.BrokerCommunicator.PublishAdvertisement(ctx, advDTO); err != nil {
 			logger.Error(err, fmt.Sprintf("❌ Failed to publish to broker (will retry)\n  └─ Cluster: %s", clusterID))
-			// Don't fail the reconciliation, just log the error
-		} else {
-			logger.Info(fmt.Sprintf("✅ Published to broker successfully (via transport abstraction)\n  └─ Cluster: %s", clusterID))
+			return err
 		}
-	} else if r.BrokerClient != nil && r.BrokerClient.Enabled {
-		// Legacy Kubernetes transport fallback
-		if err := r.BrokerClient.PublishAdvertisement(ctx, advertisement); err != nil {
-			logger.Error(err, fmt.Sprintf("❌ Failed to publish to broker (will retry)\n  └─ Cluster: %s", clusterID))
-			// Don't fail the reconciliation, just log the error
-		} else {
-			logger.Info(fmt.Sprintf("✅ Published to broker successfully (via legacy client)\n  └─ Cluster: %s", clusterID))
-		}
+		logger.Info(fmt.Sprintf("✅ Published to broker successfully (via transport abstraction)\n  └─ Cluster: %s", clusterID))
+		return nil
 	}
 
-	return result, err
+	if r.BrokerClient != nil && r.BrokerClient.Enabled {
+		if err := r.BrokerClient.PublishAdvertisement(ctx, advertisement); err != nil {
+			logger.Error(err, fmt.Sprintf("❌ Failed to publish to broker (will retry)\n  └─ Cluster: %s", clusterID))
+			return err
+		}
+		logger.Info(fmt.Sprintf("✅ Published to broker successfully (via legacy client)\n  └─ Cluster: %s", clusterID))
+	}
+
+	return nil
 }
 
 // updateStatus updates the Advertisement status
