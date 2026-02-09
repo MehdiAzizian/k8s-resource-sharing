@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Common functions for evaluation tests
 #
-# Architecture: only 2 Kind clusters are used (compatible with cgroup v1 / older kernels)
-#   - "broker"  : runs the broker process + its CRDs
-#   - "agents"  : shared cluster for all agents (each agent uses a separate namespace)
-# For tests needing different resource profiles (test6, test7),
-# agents can also run against the "broker" cluster as a second provider.
+# Uses Kind (Kubernetes in Docker) for cluster management.
+# Requires sysctl tuning for many clusters (fs.inotify.max_user_instances=8192).
+# Each agent gets its own real, separate Kind cluster.
 set -euo pipefail
 
 # ============================================================
@@ -28,7 +26,6 @@ BROKER_HEALTH_PORT=8081
 AGENT_HEALTH_PORT_BASE=9000
 
 BROKER_CLUSTER="broker"
-SHARED_CLUSTER="agents"
 
 # ============================================================
 # INITIALIZATION
@@ -126,6 +123,38 @@ create_cluster() {
     kind get kubeconfig --name "$name" > "$KUBECONFIGS_DIR/$name.kubeconfig"
 }
 
+# Create multiple clusters in parallel (batched)
+create_clusters_parallel() {
+    local prefix=$1
+    local count=$2
+    local batch_size=${3:-5}
+
+    for ((start=1; start<=count; start+=batch_size)); do
+        local end=$((start + batch_size - 1))
+        if [[ $end -gt $count ]]; then end=$count; fi
+
+        log_info "Creating clusters ${prefix}-${start} to ${prefix}-${end} in parallel..."
+        local pids=()
+        for i in $(seq "$start" "$end"); do
+            create_cluster "${prefix}-${i}" &
+            pids+=($!)
+        done
+
+        # Wait for all in this batch
+        local failed=0
+        for pid in "${pids[@]}"; do
+            if ! wait "$pid" 2>/dev/null; then
+                ((failed++)) || true
+            fi
+        done
+
+        if [[ $failed -gt 0 ]]; then
+            log_error "$failed cluster(s) failed in batch starting at ${prefix}-${start}"
+            return 1
+        fi
+    done
+}
+
 delete_cluster() {
     local name=$1
     if kind get clusters 2>/dev/null | grep -qx "$name"; then
@@ -133,18 +162,6 @@ delete_cluster() {
         kind delete cluster --name "$name" 2>/dev/null
     fi
     rm -f "$KUBECONFIGS_DIR/$name.kubeconfig"
-}
-
-# ============================================================
-# NAMESPACE MANAGEMENT (for shared cluster)
-# ============================================================
-create_agent_namespace() {
-    local cluster_name=$1
-    local namespace=$2
-    local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
-    kubectl --kubeconfig "$kubeconfig" create namespace "$namespace" \
-        --dry-run=client -o yaml 2>/dev/null | \
-        kubectl --kubeconfig "$kubeconfig" apply -f - 2>/dev/null
 }
 
 # ============================================================
@@ -196,16 +213,15 @@ wait_for_broker() {
     return 1
 }
 
-# Start an agent. Parameters:
+# Start an agent on its own cluster.
+# Parameters:
 #   agent_id     - unique agent identifier (must match cert CN)
-#   cluster_name - Kind cluster to connect to
+#   cluster_name - k3d cluster to connect to
 #   agent_num    - numeric index (for unique health port)
-#   namespace    - K8s namespace for this agent's CRDs (default: "default")
 start_agent() {
     local agent_id=$1
     local cluster_name=$2
     local agent_num=$3
-    local namespace=${4:-default}
     local health_port=$((AGENT_HEALTH_PORT_BASE + agent_num))
 
     KUBECONFIG="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig" \
@@ -214,8 +230,6 @@ start_agent() {
         --broker-url="https://localhost:$BROKER_PORT" \
         --broker-cert-path="$CERTS_DIR/$agent_id" \
         --cluster-id="$agent_id" \
-        --advertisement-namespace="$namespace" \
-        --instruction-namespace="$namespace" \
         --health-probe-bind-address=":$health_port" \
         --metrics-bind-address=0 \
         --metrics-secure=false \
@@ -223,7 +237,7 @@ start_agent() {
         > "$LOGS_DIR/${agent_id}.log" 2>&1 &
     local pid=$!
     echo "$pid" > "$PIDS_DIR/${agent_id}.pid"
-    log_info "Agent '$agent_id' started (PID: $pid, cluster: $cluster_name, ns: $namespace)"
+    log_info "Agent '$agent_id' started (PID: $pid, cluster: $cluster_name)"
 }
 
 stop_process() {
@@ -425,12 +439,12 @@ wait_for_pod_running() {
 }
 
 wait_for_provider_instruction() {
-    local cluster_name=$1 namespace=${2:-default} timeout=${3:-60}
+    local cluster_name=$1 timeout=${2:-60}
     local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
 
     for _ in $(seq 1 "$timeout"); do
         local count
-        count=$(kubectl --kubeconfig "$kubeconfig" get providerinstructions -n "$namespace" \
+        count=$(kubectl --kubeconfig "$kubeconfig" get providerinstructions -n default \
             --no-headers 2>/dev/null | wc -l || true)
         if [[ "$count" -gt 0 ]]; then
             return 0
@@ -441,12 +455,12 @@ wait_for_provider_instruction() {
 }
 
 wait_for_reservation_instruction() {
-    local cluster_name=$1 namespace=${2:-default} timeout=${3:-60}
+    local cluster_name=$1 timeout=${2:-60}
     local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
 
     for _ in $(seq 1 "$timeout"); do
         local count
-        count=$(kubectl --kubeconfig "$kubeconfig" get reservationinstructions -n "$namespace" \
+        count=$(kubectl --kubeconfig "$kubeconfig" get reservationinstructions -n default \
             --no-headers 2>/dev/null | wc -l || true)
         if [[ "$count" -gt 0 ]]; then
             return 0

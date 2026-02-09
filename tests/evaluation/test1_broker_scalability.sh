@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test 1: Broker CPU/RAM vs number of connected agents
-# All agents share the "agents" Kind cluster (each in a separate namespace)
+# Each agent gets its own real k3d cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,10 +20,11 @@ log_info "========================================="
 
 echo "agents,avg_cpu_percent,max_cpu_percent,avg_memory_mb,max_memory_mb" > "$OUTPUT"
 
-# Pre-create all namespaces on the shared cluster
+# Pre-create all agent clusters needed (max count)
 max_count=${AGENT_COUNTS[-1]}
+create_clusters_parallel "agent" "$max_count"
 for i in $(seq 1 "$max_count"); do
-    create_agent_namespace "$SHARED_CLUSTER" "ns-agent-$i"
+    install_agent_crds "agent-$i"
 done
 
 for count in "${AGENT_COUNTS[@]}"; do
@@ -33,9 +34,9 @@ for count in "${AGENT_COUNTS[@]}"; do
     start_broker
     broker_pid=$(cat "$PIDS_DIR/broker.pid")
 
-    # Start N agents on the shared cluster (each in its own namespace)
+    # Start N agents (each on its own cluster)
     for i in $(seq 1 "$count"); do
-        start_agent "agent-$i" "$SHARED_CLUSTER" "$i" "ns-agent-$i"
+        start_agent "agent-$i" "agent-$i" "$i"
     done
 
     # Wait for all advertisements

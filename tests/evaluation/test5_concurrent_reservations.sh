@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test 5: Reservation time vs simultaneous requests
 # Creates N reservations in parallel, measures how long each takes
-# All agents share the "agents" Kind cluster (each in a separate namespace)
+# Each agent has its own real k3d cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,21 +11,23 @@ init_workdir
 OUTPUT="$RESULTS_DIR/5_concurrent_reservations.csv"
 CONCURRENCY_LEVELS=(1 2 4 6 8 10)
 SETTLE_SECS=60
-AGENT_COUNT=10  # Need enough agents for concurrent requests
+AGENT_COUNT=10  # Need enough provider clusters
 
 log_info "========================================="
 log_info "  Test 5: Concurrent Reservations"
 log_info "  Concurrency levels: ${CONCURRENCY_LEVELS[*]}"
 log_info "========================================="
 
-# Create namespaces and start agents on the shared cluster
+# Create agent clusters
+create_clusters_parallel "agent" "$AGENT_COUNT"
 for i in $(seq 1 "$AGENT_COUNT"); do
-    create_agent_namespace "$SHARED_CLUSTER" "ns-agent-$i"
+    install_agent_crds "agent-$i"
 done
 
+# Start broker + all agents
 start_broker
 for i in $(seq 1 "$AGENT_COUNT"); do
-    start_agent "agent-$i" "$SHARED_CLUSTER" "$i" "ns-agent-$i"
+    start_agent "agent-$i" "agent-$i" "$i"
 done
 for i in $(seq 1 "$AGENT_COUNT"); do
     wait_for_cluster_advertisement "agent-$i" 120

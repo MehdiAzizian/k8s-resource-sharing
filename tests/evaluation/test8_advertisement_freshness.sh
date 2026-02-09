@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test 8: Advertisement freshness
 # Measures delay between deploying a pod and broker seeing the resource change
-# Agent runs on the shared "agents" cluster
+# Agent has its own real k3d cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,12 +17,13 @@ log_info "  Test 8: Advertisement Freshness"
 log_info "  Trials: $TRIALS"
 log_info "========================================="
 
-# Create namespace for agent on the shared cluster
-create_agent_namespace "$SHARED_CLUSTER" "ns-agent-1"
+# Create 1 agent cluster
+create_cluster "agent-1"
+install_agent_crds "agent-1"
 
-# Start broker + 1 agent on shared cluster
+# Start broker + 1 agent
 start_broker
-start_agent "agent-1" "$SHARED_CLUSTER" 1 "ns-agent-1"
+start_agent "agent-1" "agent-1" 1
 wait_for_cluster_advertisement "agent-1" 120
 
 log_info "Agent connected. Settling ${SETTLE_SECS}s..."
@@ -37,15 +38,15 @@ for t in $(seq 1 "$TRIALS"); do
     cpu_before=$(get_broker_available_cpu "agent-1")
     log_info "  CPU before: $cpu_before"
 
-    # Deploy a pod that consumes 500m CPU on the shared cluster
+    # Deploy a pod that consumes 500m CPU on the agent's cluster
     pod_name="freshness-$t"
     t_deploy=$(now_ms)
-    deploy_dummy_pod "$SHARED_CLUSTER" "$pod_name" "500m" "256Mi"
+    deploy_dummy_pod "agent-1" "$pod_name" "500m" "256Mi"
 
     # Wait for pod to be running first
-    if ! wait_for_pod_running "$SHARED_CLUSTER" "$pod_name" 60; then
+    if ! wait_for_pod_running "agent-1" "$pod_name" 60; then
         log_warn "  Pod did not start, skipping trial"
-        delete_dummy_pod "$SHARED_CLUSTER" "$pod_name"
+        delete_dummy_pod "agent-1" "$pod_name"
         continue
     fi
 
@@ -72,7 +73,7 @@ for t in $(seq 1 "$TRIALS"); do
     fi
 
     # Cleanup: delete pod and wait for resources to free up
-    delete_dummy_pod "$SHARED_CLUSTER" "$pod_name"
+    delete_dummy_pod "agent-1" "$pod_name"
     log_info "  Waiting for resources to free up..."
     sleep 45  # Wait for next advertisement cycle
 done

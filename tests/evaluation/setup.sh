@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup: build binaries, generate certs, create 2 Kind clusters
+# One-time setup: build binaries, generate certs, create broker cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +18,16 @@ for cmd in docker kind kubectl go openssl curl; do
         exit 1
     fi
 done
-log_info "All prerequisites found"
+
+# Check inotify limits (needed for many Kind clusters)
+max_instances=$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)
+if [[ "$max_instances" -lt 1024 ]]; then
+    log_error "inotify max_user_instances is too low ($max_instances). Run:"
+    log_error "  sudo sysctl fs.inotify.max_user_instances=8192"
+    log_error "  sudo sysctl fs.inotify.max_user_watches=655360"
+    exit 1
+fi
+log_info "All prerequisites found (inotify max_instances=$max_instances)"
 
 # Build broker
 log_info "Building broker binary..."
@@ -47,17 +56,14 @@ for i in $(seq 1 20); do
 done
 log_info "All certificates generated"
 
-# Create exactly 2 Kind clusters (all tests share these)
+# Create broker cluster (agent clusters are created per-test)
 create_cluster "$BROKER_CLUSTER"
-create_cluster "$SHARED_CLUSTER"
-
-# Install CRDs on both clusters
 install_broker_crds
-install_agent_crds "$SHARED_CLUSTER"
-install_agent_crds "$BROKER_CLUSTER"
 
 log_info "========================================="
-log_info "  Setup complete! (2 clusters: $BROKER_CLUSTER + $SHARED_CLUSTER)"
+log_info "  Setup complete!"
+log_info "  Broker cluster ready: $BROKER_CLUSTER"
+log_info "  Agent clusters will be created per-test"
 log_info "  Run tests:  ./test1_broker_scalability.sh"
 log_info "  Results in: $RESULTS_DIR/"
 log_info "========================================="

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Test 6: Decision accuracy
-# Sets up 2 agents with different load profiles, verifies correct selection
-# - agent-1 on "agents" cluster (HEAVY load via dummy pods)
-# - agent-2 on "broker" cluster (LIGHT / no extra load)
+# Sets up 3 agents with different load profiles, verifies correct selection
+# - agent-1 cluster: HEAVY load (many dummy pods)
+# - agent-2 cluster: MEDIUM load (some dummy pods)
+# - agent-3 cluster: LIGHT (no extra load)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,25 +17,34 @@ log_info "========================================="
 log_info "  Test 6: Decision Accuracy"
 log_info "========================================="
 
-# Create namespaces for agents
-create_agent_namespace "$SHARED_CLUSTER" "ns-agent-1"
-create_agent_namespace "$BROKER_CLUSTER" "ns-agent-2"
+# Create 3 agent clusters with different load profiles
+create_clusters_parallel "agent" 3
+install_agent_crds "agent-1"
+install_agent_crds "agent-2"
+install_agent_crds "agent-3"
 
-# Start broker + 2 agents on different clusters
+# Start broker + 3 agents
 start_broker
-start_agent "agent-1" "$SHARED_CLUSTER" 1 "ns-agent-1"
-start_agent "agent-2" "$BROKER_CLUSTER" 2 "ns-agent-2"
+start_agent "agent-1" "agent-1" 1
+start_agent "agent-2" "agent-2" 2
+start_agent "agent-3" "agent-3" 3
 wait_for_cluster_advertisement "agent-1" 120
 wait_for_cluster_advertisement "agent-2" 120
+wait_for_cluster_advertisement "agent-3" 120
 
-log_info "Both agents connected. Creating different load profiles..."
+log_info "All agents connected. Creating different load profiles..."
 
-# Deploy heavy load on the "agents" cluster (agent-1 sees less available resources)
+# Deploy heavy load on agent-1 (least available resources)
 for p in $(seq 1 6); do
-    deploy_dummy_pod "$SHARED_CLUSTER" "load-heavy-$p" "500m" "256Mi"
+    deploy_dummy_pod "agent-1" "load-heavy-$p" "500m" "256Mi"
 done
 
-# "broker" cluster (agent-2) has no extra load -> more available resources
+# Deploy medium load on agent-2
+for p in $(seq 1 3); do
+    deploy_dummy_pod "agent-2" "load-medium-$p" "500m" "256Mi"
+done
+
+# agent-3 has no extra load -> most available resources
 
 log_info "Load deployed. Settling ${SETTLE_SECS}s for advertisements to update..."
 sleep "$SETTLE_SECS"
@@ -47,18 +57,18 @@ kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
 
 echo "scenario,requested_cpu,requested_mem,chosen_cluster,expected_cluster,correct" > "$OUTPUT"
 
-# Scenario 1: Small request - should go to agent-2 (more available resources)
+# Scenario 1: Small request - should go to agent-3 (most available resources)
 log_info "Scenario 1: Small request (200m CPU, 128Mi)"
 create_reservation "accuracy-1" "external-requester" "200m" "128Mi"
 if wait_for_reservation_phase "accuracy-1" "Reserved" 60; then
     target=$(get_reservation_target "accuracy-1")
-    expected="agent-2"
+    expected="agent-3"
     correct=$([[ "$target" == "$expected" ]] && echo "yes" || echo "no")
     log_info "  Chosen: $target, Expected: $expected, Correct: $correct"
     echo "small_request,200m,128Mi,$target,$expected,$correct" >> "$OUTPUT"
 else
     log_warn "  Reservation did not resolve"
-    echo "small_request,200m,128Mi,TIMEOUT,agent-2,no" >> "$OUTPUT"
+    echo "small_request,200m,128Mi,TIMEOUT,agent-3,no" >> "$OUTPUT"
 fi
 delete_reservation "accuracy-1"
 sleep 5
@@ -68,12 +78,12 @@ log_info "Scenario 2: Medium request (1 CPU, 512Mi)"
 create_reservation "accuracy-2" "external-requester" "1" "512Mi"
 if wait_for_reservation_phase "accuracy-2" "Reserved" 60; then
     target=$(get_reservation_target "accuracy-2")
-    expected="agent-2"
+    expected="agent-3"
     correct=$([[ "$target" == "$expected" ]] && echo "yes" || echo "no")
     log_info "  Chosen: $target, Expected: $expected, Correct: $correct"
     echo "medium_request,1,512Mi,$target,$expected,$correct" >> "$OUTPUT"
 else
-    echo "medium_request,1,512Mi,TIMEOUT,agent-2,no" >> "$OUTPUT"
+    echo "medium_request,1,512Mi,TIMEOUT,agent-3,no" >> "$OUTPUT"
 fi
 delete_reservation "accuracy-2"
 sleep 5
@@ -84,11 +94,11 @@ create_reservation "accuracy-3" "external-requester" "2" "1Gi"
 if wait_for_reservation_phase "accuracy-3" "Reserved" 60; then
     target=$(get_reservation_target "accuracy-3")
     # Should not be agent-1 (too loaded)
-    correct=$([[ "$target" == "agent-2" ]] && echo "yes" || echo "no")
-    log_info "  Chosen: $target, Expected: agent-2, Correct: $correct"
-    echo "large_request,2,1Gi,$target,agent-2,$correct" >> "$OUTPUT"
+    correct=$([[ "$target" != "agent-1" ]] && echo "yes" || echo "no")
+    log_info "  Chosen: $target, Expected: not agent-1, Correct: $correct"
+    echo "large_request,2,1Gi,$target,not-agent-1,$correct" >> "$OUTPUT"
 else
-    echo "large_request,2,1Gi,TIMEOUT,agent-2,no" >> "$OUTPUT"
+    echo "large_request,2,1Gi,TIMEOUT,not-agent-1,no" >> "$OUTPUT"
 fi
 delete_reservation "accuracy-3"
 sleep 5
@@ -104,7 +114,7 @@ create_reservation "accuracy-4b" "external-requester" "1" "512Mi"
 if wait_for_reservation_phase "accuracy-4b" "Reserved" 60; then
     target_b=$(get_reservation_target "accuracy-4b")
     log_info "  First: $target_a, Second: $target_b"
-    echo "consecutive_1st,1,512Mi,$target_a,agent-2,$([[ "$target_a" == "agent-2" ]] && echo yes || echo no)" >> "$OUTPUT"
+    echo "consecutive_1st,1,512Mi,$target_a,agent-3,$([[ "$target_a" == "agent-3" ]] && echo yes || echo no)" >> "$OUTPUT"
     echo "consecutive_2nd,1,512Mi,$target_b,varies,yes" >> "$OUTPUT"
 else
     echo "consecutive_2nd,1,512Mi,TIMEOUT,varies,no" >> "$OUTPUT"
@@ -131,7 +141,8 @@ fi
 delete_reservation "accuracy-5"
 
 # Cleanup dummy pods
-for p in $(seq 1 6); do delete_dummy_pod "$SHARED_CLUSTER" "load-heavy-$p"; done
+for p in $(seq 1 6); do delete_dummy_pod "agent-1" "load-heavy-$p"; done
+for p in $(seq 1 3); do delete_dummy_pod "agent-2" "load-medium-$p"; done
 
 stop_all
 

@@ -13,7 +13,7 @@ log_info "========================================="
 # Stop all running processes
 stop_all
 
-# Delete all Kind clusters created by the evaluation
+# Delete all Kind clusters
 for cluster in $(kind get clusters 2>/dev/null); do
     log_info "Deleting cluster '$cluster'..."
     kind delete cluster --name "$cluster" 2>/dev/null || true
