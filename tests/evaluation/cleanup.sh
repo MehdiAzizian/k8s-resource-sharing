@@ -13,10 +13,10 @@ log_info "========================================="
 # Stop all running processes
 stop_all
 
-# Delete all k3d clusters
-for cluster in $(k3d cluster list --no-headers 2>/dev/null | awk '{print $1}'); do
+# Delete all Kind clusters
+for cluster in $(kind get clusters 2>/dev/null); do
     log_info "Deleting cluster '$cluster'..."
-    k3d cluster delete "$cluster" 2>/dev/null || true
+    kind delete cluster --name "$cluster" 2>/dev/null || true
 done
 
 # Clean up work directory

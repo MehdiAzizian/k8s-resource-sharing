@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup: build binaries, generate certs, install k3d, create broker cluster
+# One-time setup: build binaries, generate certs, create broker cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,20 +12,22 @@ log_info "========================================="
 
 # Check prerequisites
 log_info "Checking prerequisites..."
-for cmd in docker kubectl go openssl curl; do
+for cmd in docker kind kubectl go openssl curl; do
     if ! command -v "$cmd" &>/dev/null; then
         log_error "'$cmd' is not installed"
         exit 1
     fi
 done
 
-# Install k3d if not present
-if ! command -v k3d &>/dev/null; then
-    log_info "Installing k3d..."
-    curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+# Check inotify limits (needed for many Kind clusters)
+max_instances=$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)
+if [[ "$max_instances" -lt 1024 ]]; then
+    log_error "inotify max_user_instances is too low ($max_instances). Run:"
+    log_error "  sudo sysctl fs.inotify.max_user_instances=8192"
+    log_error "  sudo sysctl fs.inotify.max_user_watches=655360"
+    exit 1
 fi
-log_info "k3d version: $(k3d version | head -1)"
-log_info "All prerequisites found"
+log_info "All prerequisites found (inotify max_instances=$max_instances)"
 
 # Build broker
 log_info "Building broker binary..."

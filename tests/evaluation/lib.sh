@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Common functions for evaluation tests
 #
-# Uses k3d (k3s in Docker) for cluster management.
-# k3d does NOT require systemd inside containers, so it works on cgroup v1 / old kernels.
-# Each agent gets its own real, separate k3d cluster.
+# Uses Kind (Kubernetes in Docker) for cluster management.
+# Requires sysctl tuning for many clusters (fs.inotify.max_user_instances=8192).
+# Each agent gets its own real, separate Kind cluster.
 set -euo pipefail
 
 # ============================================================
@@ -110,24 +110,20 @@ EOF
 }
 
 # ============================================================
-# K3D CLUSTER MANAGEMENT
+# KIND CLUSTER MANAGEMENT
 # ============================================================
 create_cluster() {
     local name=$1
-    if k3d cluster list -o json 2>/dev/null | grep -q "\"name\":\"$name\""; then
+    if kind get clusters 2>/dev/null | grep -qx "$name"; then
         log_info "Cluster '$name' already exists"
     else
-        log_info "Creating k3d cluster '$name'..."
-        k3d cluster create "$name" \
-            --no-lb \
-            --k3s-arg "--disable=traefik@server:0" \
-            --timeout 120s \
-            2>&1 | tail -3
+        log_info "Creating Kind cluster '$name'..."
+        kind create cluster --name "$name" --wait 180s 2>&1 | tail -1
     fi
-    k3d kubeconfig get "$name" > "$KUBECONFIGS_DIR/$name.kubeconfig" 2>/dev/null
+    kind get kubeconfig --name "$name" > "$KUBECONFIGS_DIR/$name.kubeconfig"
 }
 
-# Create multiple clusters in parallel (k3d handles this well)
+# Create multiple clusters in parallel (batched)
 create_clusters_parallel() {
     local prefix=$1
     local count=$2
@@ -161,9 +157,9 @@ create_clusters_parallel() {
 
 delete_cluster() {
     local name=$1
-    if k3d cluster list -o json 2>/dev/null | grep -q "\"name\":\"$name\""; then
-        log_info "Deleting k3d cluster '$name'..."
-        k3d cluster delete "$name" 2>/dev/null || true
+    if kind get clusters 2>/dev/null | grep -qx "$name"; then
+        log_info "Deleting Kind cluster '$name'..."
+        kind delete cluster --name "$name" 2>/dev/null
     fi
     rm -f "$KUBECONFIGS_DIR/$name.kubeconfig"
 }
