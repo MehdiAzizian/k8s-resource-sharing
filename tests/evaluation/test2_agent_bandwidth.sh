@@ -23,13 +23,12 @@ if ! sudo -n true 2>/dev/null; then
     exit 1
 fi
 
-# Create 1 agent cluster
-create_cluster "agent-1"
-install_agent_crds "agent-1"
+# Create namespace for agent on the shared cluster
+create_agent_namespace "$SHARED_CLUSTER" "ns-agent-1"
 
-# Start broker + 1 agent
+# Start broker + 1 agent on shared cluster
 start_broker
-start_agent "agent-1" "agent-1" 1
+start_agent "agent-1" "$SHARED_CLUSTER" 1 "ns-agent-1"
 wait_for_cluster_advertisement "agent-1" 120
 
 log_info "Agent connected. Setting up bandwidth measurement..."

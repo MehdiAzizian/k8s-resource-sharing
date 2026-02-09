@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup: build binaries, generate certs, create broker cluster
+# One-time setup: build binaries, generate certs, create 2 Kind clusters
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,10 +26,9 @@ cd "$BROKER_DIR"
 go build -o bin/broker cmd/main.go
 log_info "Broker binary: $BROKER_DIR/bin/broker"
 
-# Generate agent CRD manifests (they may not exist yet)
+# Generate agent CRD manifests
 log_info "Generating CRD manifests..."
 cd "$AGENT_DIR"
-# Install controller-gen if needed, then generate CRDs
 GOBIN="$AGENT_DIR/bin" go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest 2>/dev/null || true
 "$AGENT_DIR/bin/controller-gen" crd paths="./..." output:crd:artifacts:config=config/crd/bases 2>/dev/null || \
     make manifests 2>/dev/null || true
@@ -48,12 +47,17 @@ for i in $(seq 1 20); do
 done
 log_info "All certificates generated"
 
-# Create broker cluster + install CRDs
-create_cluster "broker"
+# Create exactly 2 Kind clusters (all tests share these)
+create_cluster "$BROKER_CLUSTER"
+create_cluster "$SHARED_CLUSTER"
+
+# Install CRDs on both clusters
 install_broker_crds
+install_agent_crds "$SHARED_CLUSTER"
+install_agent_crds "$BROKER_CLUSTER"
 
 log_info "========================================="
-log_info "  Setup complete!"
+log_info "  Setup complete! (2 clusters: $BROKER_CLUSTER + $SHARED_CLUSTER)"
 log_info "  Run tests:  ./test1_broker_scalability.sh"
 log_info "  Results in: $RESULTS_DIR/"
 log_info "========================================="

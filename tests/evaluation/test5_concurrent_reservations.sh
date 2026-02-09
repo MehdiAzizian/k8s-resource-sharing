@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Test 5: Reservation time vs simultaneous requests
 # Creates N reservations in parallel, measures how long each takes
+# All agents share the "agents" Kind cluster (each in a separate namespace)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,23 +11,21 @@ init_workdir
 OUTPUT="$RESULTS_DIR/5_concurrent_reservations.csv"
 CONCURRENCY_LEVELS=(1 2 4 6 8 10)
 SETTLE_SECS=60
-AGENT_COUNT=10  # Need enough provider clusters
+AGENT_COUNT=10  # Need enough agents for concurrent requests
 
 log_info "========================================="
 log_info "  Test 5: Concurrent Reservations"
 log_info "  Concurrency levels: ${CONCURRENCY_LEVELS[*]}"
 log_info "========================================="
 
-# Create agent clusters
-create_clusters_parallel "agent" "$AGENT_COUNT"
+# Create namespaces and start agents on the shared cluster
 for i in $(seq 1 "$AGENT_COUNT"); do
-    install_agent_crds "agent-$i"
+    create_agent_namespace "$SHARED_CLUSTER" "ns-agent-$i"
 done
 
-# Start broker + all agents
 start_broker
 for i in $(seq 1 "$AGENT_COUNT"); do
-    start_agent "agent-$i" "agent-$i" "$i"
+    start_agent "agent-$i" "$SHARED_CLUSTER" "$i" "ns-agent-$i"
 done
 for i in $(seq 1 "$AGENT_COUNT"); do
     wait_for_cluster_advertisement "agent-$i" 120
@@ -48,7 +47,6 @@ for level in "${CONCURRENCY_LEVELS[@]}"; do
     timing_dir=$(mktemp -d)
 
     # Launch N reservations in parallel
-    t_start=$(now_ms)
     for r in $(seq 1 "$level"); do
         (
             res_name="concurrent-${level}-r${r}"
