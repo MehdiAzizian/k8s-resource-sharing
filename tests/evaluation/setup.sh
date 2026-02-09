@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup: build binaries, generate certs, create 2 Kind clusters
+# One-time setup: build binaries, generate certs, install k3d, create broker cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,12 +12,19 @@ log_info "========================================="
 
 # Check prerequisites
 log_info "Checking prerequisites..."
-for cmd in docker kind kubectl go openssl curl; do
+for cmd in docker kubectl go openssl curl; do
     if ! command -v "$cmd" &>/dev/null; then
         log_error "'$cmd' is not installed"
         exit 1
     fi
 done
+
+# Install k3d if not present
+if ! command -v k3d &>/dev/null; then
+    log_info "Installing k3d..."
+    curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+fi
+log_info "k3d version: $(k3d version | head -1)"
 log_info "All prerequisites found"
 
 # Build broker
@@ -47,17 +54,14 @@ for i in $(seq 1 20); do
 done
 log_info "All certificates generated"
 
-# Create exactly 2 Kind clusters (all tests share these)
+# Create broker cluster (agent clusters are created per-test)
 create_cluster "$BROKER_CLUSTER"
-create_cluster "$SHARED_CLUSTER"
-
-# Install CRDs on both clusters
 install_broker_crds
-install_agent_crds "$SHARED_CLUSTER"
-install_agent_crds "$BROKER_CLUSTER"
 
 log_info "========================================="
-log_info "  Setup complete! (2 clusters: $BROKER_CLUSTER + $SHARED_CLUSTER)"
+log_info "  Setup complete!"
+log_info "  Broker cluster ready: $BROKER_CLUSTER"
+log_info "  Agent clusters will be created per-test"
 log_info "  Run tests:  ./test1_broker_scalability.sh"
 log_info "  Results in: $RESULTS_DIR/"
 log_info "========================================="

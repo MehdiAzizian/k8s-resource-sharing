@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Test 7: Reservation under resource pressure
 # Reserves resources until one cluster is full, verifies routing to the other
-# - agent-1 on "agents" cluster
-# - agent-2 on "broker" cluster
+# Each agent has its own real k3d cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,14 +16,15 @@ log_info "========================================="
 log_info "  Test 7: Resource Exhaustion"
 log_info "========================================="
 
-# Create namespaces for agents
-create_agent_namespace "$SHARED_CLUSTER" "ns-agent-1"
-create_agent_namespace "$BROKER_CLUSTER" "ns-agent-2"
+# Create 2 agent clusters
+create_clusters_parallel "agent" 2
+install_agent_crds "agent-1"
+install_agent_crds "agent-2"
 
-# Start broker + 2 agents on different clusters
+# Start broker + 2 agents
 start_broker
-start_agent "agent-1" "$SHARED_CLUSTER" 1 "ns-agent-1"
-start_agent "agent-2" "$BROKER_CLUSTER" 2 "ns-agent-2"
+start_agent "agent-1" "agent-1" 1
+start_agent "agent-2" "agent-2" 2
 wait_for_cluster_advertisement "agent-1" 120
 wait_for_cluster_advertisement "agent-2" 120
 
