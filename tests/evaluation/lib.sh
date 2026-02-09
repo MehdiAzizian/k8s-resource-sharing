@@ -112,7 +112,7 @@ create_cluster() {
         log_info "Cluster '$name' already exists"
     else
         log_info "Creating Kind cluster '$name'..."
-        kind create cluster --name "$name" --wait 60s 2>&1 | tail -1
+        kind create cluster --name "$name" --wait 120s 2>&1 | tail -1
     fi
     kind get kubeconfig --name "$name" > "$KUBECONFIGS_DIR/$name.kubeconfig"
 }
@@ -129,14 +129,24 @@ delete_cluster() {
 create_clusters_parallel() {
     local prefix=$1
     local count=$2
-    log_info "Creating $count clusters in parallel..."
-    local pids=()
-    for i in $(seq 1 "$count"); do
-        create_cluster "${prefix}-${i}" &
-        pids+=($!)
-    done
-    for pid in "${pids[@]}"; do
-        wait "$pid" || true
+    local batch_size=5
+    log_info "Creating $count clusters (batches of $batch_size)..."
+
+    local i=1
+    while [[ $i -le $count ]]; do
+        local pids=()
+        local end=$((i + batch_size - 1))
+        [[ $end -gt $count ]] && end=$count
+
+        for j in $(seq "$i" "$end"); do
+            create_cluster "${prefix}-${j}" &
+            pids+=($!)
+        done
+        for pid in "${pids[@]}"; do
+            wait "$pid" || true
+        done
+
+        i=$((end + 1))
     done
 }
 
