@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Common functions for evaluation tests
+#
+# Architecture: only 2 Kind clusters are used (compatible with cgroup v1 / older kernels)
+#   - "broker"  : runs the broker process + its CRDs
+#   - "agents"  : shared cluster for all agents (each agent uses a separate namespace)
+# For tests needing different resource profiles (test6, test7),
+# agents can also run against the "broker" cluster as a second provider.
 set -euo pipefail
 
 # ============================================================
@@ -20,6 +26,9 @@ PIDS_DIR="$WORK_DIR/pids"
 BROKER_PORT=8443
 BROKER_HEALTH_PORT=8081
 AGENT_HEALTH_PORT_BASE=9000
+
+BROKER_CLUSTER="broker"
+SHARED_CLUSTER="agents"
 
 # ============================================================
 # INITIALIZATION
@@ -126,35 +135,23 @@ delete_cluster() {
     rm -f "$KUBECONFIGS_DIR/$name.kubeconfig"
 }
 
-create_clusters_parallel() {
-    local prefix=$1
-    local count=$2
-    log_info "Creating $count clusters one by one..."
-
-    for i in $(seq 1 "$count"); do
-        create_cluster "${prefix}-${i}"
-    done
-}
-
-delete_clusters_parallel() {
-    local prefix=$1
-    local count=$2
-    log_info "Deleting $count clusters in parallel..."
-    local pids=()
-    for i in $(seq 1 "$count"); do
-        delete_cluster "${prefix}-${i}" &
-        pids+=($!)
-    done
-    for pid in "${pids[@]}"; do
-        wait "$pid" || true
-    done
+# ============================================================
+# NAMESPACE MANAGEMENT (for shared cluster)
+# ============================================================
+create_agent_namespace() {
+    local cluster_name=$1
+    local namespace=$2
+    local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
+    kubectl --kubeconfig "$kubeconfig" create namespace "$namespace" \
+        --dry-run=client -o yaml 2>/dev/null | \
+        kubectl --kubeconfig "$kubeconfig" apply -f - 2>/dev/null
 }
 
 # ============================================================
 # CRD INSTALLATION
 # ============================================================
 install_broker_crds() {
-    local kubeconfig="$KUBECONFIGS_DIR/broker.kubeconfig"
+    local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
     log_info "Installing broker CRDs..."
     kubectl --kubeconfig "$kubeconfig" apply -f "$BROKER_DIR/config/crd/bases/" 2>/dev/null
 }
@@ -171,7 +168,7 @@ install_agent_crds() {
 # ============================================================
 start_broker() {
     log_info "Starting broker..."
-    KUBECONFIG="$KUBECONFIGS_DIR/broker.kubeconfig" \
+    KUBECONFIG="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
         "$BROKER_DIR/bin/broker" \
         --broker-interface=http \
         --http-port="$BROKER_PORT" \
@@ -199,10 +196,16 @@ wait_for_broker() {
     return 1
 }
 
+# Start an agent. Parameters:
+#   agent_id     - unique agent identifier (must match cert CN)
+#   cluster_name - Kind cluster to connect to
+#   agent_num    - numeric index (for unique health port)
+#   namespace    - K8s namespace for this agent's CRDs (default: "default")
 start_agent() {
     local agent_id=$1
     local cluster_name=$2
     local agent_num=$3
+    local namespace=${4:-default}
     local health_port=$((AGENT_HEALTH_PORT_BASE + agent_num))
 
     KUBECONFIG="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig" \
@@ -211,8 +214,8 @@ start_agent() {
         --broker-url="https://localhost:$BROKER_PORT" \
         --broker-cert-path="$CERTS_DIR/$agent_id" \
         --cluster-id="$agent_id" \
-        --advertisement-namespace=default \
-        --instruction-namespace=default \
+        --advertisement-namespace="$namespace" \
+        --instruction-namespace="$namespace" \
         --health-probe-bind-address=":$health_port" \
         --metrics-bind-address=0 \
         --metrics-secure=false \
@@ -220,7 +223,7 @@ start_agent() {
         > "$LOGS_DIR/${agent_id}.log" 2>&1 &
     local pid=$!
     echo "$pid" > "$PIDS_DIR/${agent_id}.pid"
-    log_info "Agent '$agent_id' started (PID: $pid, health: :$health_port)"
+    log_info "Agent '$agent_id' started (PID: $pid, cluster: $cluster_name, ns: $namespace)"
 }
 
 stop_process() {
@@ -289,7 +292,7 @@ now_ms() {
 wait_for_cluster_advertisement() {
     local cluster_id=$1
     local timeout=${2:-120}
-    local kubeconfig="$KUBECONFIGS_DIR/broker.kubeconfig"
+    local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
     local adv_name="${cluster_id}-adv"
 
     for _ in $(seq 1 "$timeout"); do
@@ -308,7 +311,7 @@ wait_for_cluster_advertisement() {
 
 create_reservation() {
     local name=$1 requester_id=$2 cpu=$3 memory=$4
-    local kubeconfig="$KUBECONFIGS_DIR/broker.kubeconfig"
+    local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
 
     kubectl --kubeconfig "$kubeconfig" apply -f - <<EOF
 apiVersion: broker.fluidos.eu/v1alpha1
@@ -326,7 +329,7 @@ EOF
 
 wait_for_reservation_phase() {
     local name=$1 phase=$2 timeout=${3:-60}
-    local kubeconfig="$KUBECONFIGS_DIR/broker.kubeconfig"
+    local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
 
     for _ in $(seq 1 "$timeout"); do
         local current
@@ -342,38 +345,38 @@ wait_for_reservation_phase() {
 
 get_reservation_target() {
     local name=$1
-    local kubeconfig="$KUBECONFIGS_DIR/broker.kubeconfig"
+    local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
     kubectl --kubeconfig "$kubeconfig" get reservation "$name" -n default \
         -o jsonpath='{.spec.targetClusterID}' 2>/dev/null
 }
 
 delete_reservation() {
     local name=$1
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/broker.kubeconfig" \
+    kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
         delete reservation "$name" -n default --ignore-not-found 2>/dev/null
 }
 
 delete_all_reservations() {
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/broker.kubeconfig" \
+    kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
         delete reservations --all -n default --ignore-not-found 2>/dev/null
 }
 
 clean_broker_crds() {
-    local kubeconfig="$KUBECONFIGS_DIR/broker.kubeconfig"
+    local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
     kubectl --kubeconfig "$kubeconfig" delete clusteradvertisements --all -n default --ignore-not-found 2>/dev/null
     kubectl --kubeconfig "$kubeconfig" delete reservations --all -n default --ignore-not-found 2>/dev/null
 }
 
 get_broker_available_cpu() {
     local cluster_id=$1
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/broker.kubeconfig" \
+    kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
         get clusteradvertisement "${cluster_id}-adv" -n default \
         -o jsonpath='{.spec.resources.available.cpu}' 2>/dev/null
 }
 
 get_broker_available_memory() {
     local cluster_id=$1
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/broker.kubeconfig" \
+    kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
         get clusteradvertisement "${cluster_id}-adv" -n default \
         -o jsonpath='{.spec.resources.available.memory}' 2>/dev/null
 }
@@ -422,12 +425,12 @@ wait_for_pod_running() {
 }
 
 wait_for_provider_instruction() {
-    local cluster_name=$1 timeout=${2:-60}
+    local cluster_name=$1 namespace=${2:-default} timeout=${3:-60}
     local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
 
     for _ in $(seq 1 "$timeout"); do
         local count
-        count=$(kubectl --kubeconfig "$kubeconfig" get providerinstructions -n default \
+        count=$(kubectl --kubeconfig "$kubeconfig" get providerinstructions -n "$namespace" \
             --no-headers 2>/dev/null | wc -l || true)
         if [[ "$count" -gt 0 ]]; then
             return 0
@@ -438,12 +441,12 @@ wait_for_provider_instruction() {
 }
 
 wait_for_reservation_instruction() {
-    local cluster_name=$1 timeout=${2:-60}
+    local cluster_name=$1 namespace=${2:-default} timeout=${3:-60}
     local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
 
     for _ in $(seq 1 "$timeout"); do
         local count
-        count=$(kubectl --kubeconfig "$kubeconfig" get reservationinstructions -n default \
+        count=$(kubectl --kubeconfig "$kubeconfig" get reservationinstructions -n "$namespace" \
             --no-headers 2>/dev/null | wc -l || true)
         if [[ "$count" -gt 0 ]]; then
             return 0

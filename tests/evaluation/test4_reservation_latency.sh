@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Test 4: End-to-end reservation time
-# Measures: creation -> Reserved phase -> instruction delivery to both agents
+# Measures: creation -> Reserved phase -> instruction delivery to agents
+# Both agents run on the shared "agents" cluster in separate namespaces
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,15 +17,14 @@ log_info "  Test 4: Reservation Latency"
 log_info "  Trials: $TRIALS"
 log_info "========================================="
 
-# Create 2 agent clusters: requester + provider
-create_clusters_parallel "agent" 2
-install_agent_crds "agent-1"
-install_agent_crds "agent-2"
+# Create namespaces for 2 agents on the shared cluster
+create_agent_namespace "$SHARED_CLUSTER" "ns-agent-1"
+create_agent_namespace "$SHARED_CLUSTER" "ns-agent-2"
 
-# Start broker + 2 agents
+# Start broker + 2 agents on shared cluster
 start_broker
-start_agent "agent-1" "agent-1" 1
-start_agent "agent-2" "agent-2" 2
+start_agent "agent-1" "$SHARED_CLUSTER" 1 "ns-agent-1"
+start_agent "agent-2" "$SHARED_CLUSTER" 2 "ns-agent-2"
 wait_for_cluster_advertisement "agent-1" 120
 wait_for_cluster_advertisement "agent-2" 120
 
@@ -37,15 +37,16 @@ for t in $(seq 1 "$TRIALS"); do
     log_info "Trial $t/$TRIALS..."
     res_name="latency-test-$t"
 
-    # Clean previous instructions on agent clusters
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/agent-1.kubeconfig" \
-        delete providerinstructions --all -n default --ignore-not-found 2>/dev/null
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/agent-1.kubeconfig" \
-        delete reservationinstructions --all -n default --ignore-not-found 2>/dev/null
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/agent-2.kubeconfig" \
-        delete providerinstructions --all -n default --ignore-not-found 2>/dev/null
-    kubectl --kubeconfig "$KUBECONFIGS_DIR/agent-2.kubeconfig" \
-        delete reservationinstructions --all -n default --ignore-not-found 2>/dev/null
+    # Clean previous instructions on agent namespaces
+    kubeconfig="$KUBECONFIGS_DIR/${SHARED_CLUSTER}.kubeconfig"
+    kubectl --kubeconfig "$kubeconfig" \
+        delete providerinstructions --all -n ns-agent-1 --ignore-not-found 2>/dev/null
+    kubectl --kubeconfig "$kubeconfig" \
+        delete reservationinstructions --all -n ns-agent-1 --ignore-not-found 2>/dev/null
+    kubectl --kubeconfig "$kubeconfig" \
+        delete providerinstructions --all -n ns-agent-2 --ignore-not-found 2>/dev/null
+    kubectl --kubeconfig "$kubeconfig" \
+        delete reservationinstructions --all -n ns-agent-2 --ignore-not-found 2>/dev/null
 
     # Timestamp: create reservation
     t_start=$(now_ms)
@@ -62,20 +63,16 @@ for t in $(seq 1 "$TRIALS"); do
 
     resolve_ms=$((t_reserved - t_start))
 
-    # Determine which cluster is provider, which is requester
-    target=$(get_reservation_target "$res_name")
-
-    # Wait for provider instruction (on whichever cluster was selected)
+    # Wait for provider instruction (check both agent namespaces)
     provider_ms="N/A"
     requester_ms="N/A"
 
-    # Check both clusters for instructions (we don't know which is provider)
-    for cluster in "agent-1" "agent-2"; do
-        if wait_for_provider_instruction "$cluster" 90; then
+    for ns in "ns-agent-1" "ns-agent-2"; do
+        if wait_for_provider_instruction "$SHARED_CLUSTER" "$ns" 90; then
             t_provider=$(now_ms)
             provider_ms=$((t_provider - t_start))
         fi
-        if wait_for_reservation_instruction "$cluster" 90; then
+        if wait_for_reservation_instruction "$SHARED_CLUSTER" "$ns" 90; then
             t_requester=$(now_ms)
             requester_ms=$((t_requester - t_start))
         fi
@@ -96,7 +93,7 @@ for t in $(seq 1 "$TRIALS"); do
         total_e2e="N/A"
     fi
 
-    log_info "Trial $t: resolve=${resolve_ms}ms provider=${provider_ms}ms requester=${requester_ms}ms e2e=${total_e2e}ms target=$target"
+    log_info "Trial $t: resolve=${resolve_ms}ms provider=${provider_ms}ms requester=${requester_ms}ms e2e=${total_e2e}ms"
     echo "$t,$resolve_ms,$provider_ms,$requester_ms,$total_e2e" >> "$OUTPUT"
 
     # Cleanup reservation

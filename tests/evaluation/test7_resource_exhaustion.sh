@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Test 7: Reservation under resource pressure
-# Reserves resources from one cluster until full, verifies routing to another
+# Reserves resources until one cluster is full, verifies routing to the other
+# - agent-1 on "agents" cluster
+# - agent-2 on "broker" cluster
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,30 +17,26 @@ log_info "========================================="
 log_info "  Test 7: Resource Exhaustion"
 log_info "========================================="
 
-# Create 3 agent clusters
-create_clusters_parallel "agent" 3
-for i in 1 2 3; do
-    install_agent_crds "agent-$i"
-done
+# Create namespaces for agents
+create_agent_namespace "$SHARED_CLUSTER" "ns-agent-1"
+create_agent_namespace "$BROKER_CLUSTER" "ns-agent-2"
 
-# Start broker + agents
+# Start broker + 2 agents on different clusters
 start_broker
-for i in 1 2 3; do
-    start_agent "agent-$i" "agent-$i" "$i"
-done
-for i in 1 2 3; do
-    wait_for_cluster_advertisement "agent-$i" 120
-done
+start_agent "agent-1" "$SHARED_CLUSTER" 1 "ns-agent-1"
+start_agent "agent-2" "$BROKER_CLUSTER" 2 "ns-agent-2"
+wait_for_cluster_advertisement "agent-1" 120
+wait_for_cluster_advertisement "agent-2" 120
 
-log_info "All agents connected. Settling ${SETTLE_SECS}s..."
+log_info "Both agents connected. Settling ${SETTLE_SECS}s..."
 sleep "$SETTLE_SECS"
 
 # Show initial state
 log_info "Initial cluster states:"
-for i in 1 2 3; do
-    cpu=$(get_broker_available_cpu "agent-$i")
-    mem=$(get_broker_available_memory "agent-$i")
-    log_info "  agent-$i: CPU=$cpu Memory=$mem"
+for agent in "agent-1" "agent-2"; do
+    cpu=$(get_broker_available_cpu "$agent")
+    mem=$(get_broker_available_memory "$agent")
+    log_info "  $agent: CPU=$cpu Memory=$mem"
 done
 
 echo "reservation_num,target_cluster,status,available_cpu_after,available_mem_after" > "$OUTPUT"
@@ -97,10 +95,10 @@ done
 
 # Show final state
 log_info "Final cluster states:"
-for i in 1 2 3; do
-    cpu=$(get_broker_available_cpu "agent-$i")
-    mem=$(get_broker_available_memory "agent-$i")
-    log_info "  agent-$i: CPU=$cpu Memory=$mem"
+for agent in "agent-1" "agent-2"; do
+    cpu=$(get_broker_available_cpu "$agent")
+    mem=$(get_broker_available_memory "$agent")
+    log_info "  $agent: CPU=$cpu Memory=$mem"
 done
 
 if [[ "$route_changed" == "true" ]]; then

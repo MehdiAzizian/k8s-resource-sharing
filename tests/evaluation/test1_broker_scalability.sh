@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Test 1: Broker CPU/RAM vs number of connected agents
-# Creates agent clusters, starts agents, measures broker resource usage
+# All agents share the "agents" Kind cluster (each in a separate namespace)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,11 +20,10 @@ log_info "========================================="
 
 echo "agents,avg_cpu_percent,max_cpu_percent,avg_memory_mb,max_memory_mb" > "$OUTPUT"
 
-# Pre-create all clusters needed (max count)
+# Pre-create all namespaces on the shared cluster
 max_count=${AGENT_COUNTS[-1]}
-create_clusters_parallel "agent" "$max_count"
 for i in $(seq 1 "$max_count"); do
-    install_agent_crds "agent-$i"
+    create_agent_namespace "$SHARED_CLUSTER" "ns-agent-$i"
 done
 
 for count in "${AGENT_COUNTS[@]}"; do
@@ -34,9 +33,9 @@ for count in "${AGENT_COUNTS[@]}"; do
     start_broker
     broker_pid=$(cat "$PIDS_DIR/broker.pid")
 
-    # Start N agents
+    # Start N agents on the shared cluster (each in its own namespace)
     for i in $(seq 1 "$count"); do
-        start_agent "agent-$i" "agent-$i" "$i"
+        start_agent "agent-$i" "$SHARED_CLUSTER" "$i" "ns-agent-$i"
     done
 
     # Wait for all advertisements
