@@ -1,0 +1,7 @@
+scenario,requested_cpu,requested_mem,chosen_cluster,expected_cluster,correct
+small_request,200m,128Mi,agent-3,agent-3,yes
+medium_request,1,512Mi,agent-3,agent-3,yes
+large_request,2,1Gi,agent-3,not-agent-1,yes
+consecutive_1st,1,512Mi,agent-2,agent-3,no
+consecutive_2nd,1,512Mi,agent-3,varies,yes
+impossible_request,100,500Gi,NONE,NONE,yes
