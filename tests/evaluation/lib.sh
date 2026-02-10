@@ -369,20 +369,20 @@ get_reservation_target() {
 delete_reservation() {
     local name=$1
     kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
-        --request-timeout=30s \
+        --request-timeout=30s --wait=false \
         delete reservation "$name" -n default --ignore-not-found 2>/dev/null
 }
 
 delete_all_reservations() {
     kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
-        --request-timeout=60s \
+        --request-timeout=60s --wait=false \
         delete reservations --all -n default --ignore-not-found 2>/dev/null
 }
 
 clean_broker_crds() {
     local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
-    kubectl --kubeconfig "$kubeconfig" delete clusteradvertisements --all -n default --ignore-not-found 2>/dev/null
-    kubectl --kubeconfig "$kubeconfig" delete reservations --all -n default --ignore-not-found 2>/dev/null
+    kubectl --kubeconfig "$kubeconfig" --wait=false delete clusteradvertisements --all -n default --ignore-not-found 2>/dev/null
+    kubectl --kubeconfig "$kubeconfig" --wait=false delete reservations --all -n default --ignore-not-found 2>/dev/null
 }
 
 get_broker_available_cpu() {
