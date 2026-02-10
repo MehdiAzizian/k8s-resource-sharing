@@ -82,6 +82,7 @@ for level in "${CONCURRENCY_LEVELS[@]}"; do
     timing_dir=$(mktemp -d)
 
     # Launch N reservations in parallel
+    reservation_pids=()
     for r in $(seq 1 "$level"); do
         (
             res_name="concurrent-${level}-r${r}"
@@ -104,8 +105,12 @@ for level in "${CONCURRENCY_LEVELS[@]}"; do
                 echo "TIMEOUT" > "$timing_dir/r${r}.ms"
             fi
         ) &
+        reservation_pids+=($!)
     done
-    wait
+    # Wait ONLY for reservation subshells (not broker/agent background processes)
+    for pid in "${reservation_pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
 
     # Collect results
     durations=()
