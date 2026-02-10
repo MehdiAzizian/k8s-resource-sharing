@@ -27,6 +27,7 @@ done
 
 # Start broker + all agents
 start_broker
+clean_broker_crds
 for i in $(seq 1 "$AGENT_COUNT"); do
     start_agent "agent-$i" "agent-$i" "$i"
 done

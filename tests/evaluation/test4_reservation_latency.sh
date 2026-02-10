@@ -24,6 +24,7 @@ install_agent_crds "agent-2"
 
 # Start broker + 2 agents
 start_broker
+clean_broker_crds
 start_agent "agent-1" "agent-1" 1
 start_agent "agent-2" "agent-2" 2
 wait_for_cluster_advertisement "agent-1" 120
