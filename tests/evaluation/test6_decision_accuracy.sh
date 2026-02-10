@@ -25,6 +25,7 @@ install_agent_crds "agent-3"
 
 # Start broker + 3 agents
 start_broker
+clean_broker_crds
 start_agent "agent-1" "agent-1" 1
 start_agent "agent-2" "agent-2" 2
 start_agent "agent-3" "agent-3" 3
