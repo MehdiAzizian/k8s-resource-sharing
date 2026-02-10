@@ -327,7 +327,7 @@ create_reservation() {
     local name=$1 requester_id=$2 cpu=$3 memory=$4
     local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
 
-    kubectl --kubeconfig "$kubeconfig" apply -f - <<EOF
+    kubectl --kubeconfig "$kubeconfig" --request-timeout=15s apply -f - <<EOF
 apiVersion: broker.fluidos.eu/v1alpha1
 kind: Reservation
 metadata:
@@ -347,12 +347,13 @@ wait_for_reservation_phase() {
 
     for _ in $(seq 1 "$timeout"); do
         local current
-        current=$(kubectl --kubeconfig "$kubeconfig" get reservation "$name" -n default \
+        current=$(kubectl --kubeconfig "$kubeconfig" --request-timeout=10s \
+            get reservation "$name" -n default \
             -o jsonpath='{.status.phase}' 2>/dev/null || true)
         if [[ "$current" == "$phase" ]]; then
             return 0
         fi
-        sleep 0.2
+        sleep 1
     done
     return 1
 }
@@ -360,18 +361,21 @@ wait_for_reservation_phase() {
 get_reservation_target() {
     local name=$1
     local kubeconfig="$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig"
-    kubectl --kubeconfig "$kubeconfig" get reservation "$name" -n default \
+    kubectl --kubeconfig "$kubeconfig" --request-timeout=10s \
+        get reservation "$name" -n default \
         -o jsonpath='{.spec.targetClusterID}' 2>/dev/null
 }
 
 delete_reservation() {
     local name=$1
     kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
+        --request-timeout=30s \
         delete reservation "$name" -n default --ignore-not-found 2>/dev/null
 }
 
 delete_all_reservations() {
     kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
+        --request-timeout=60s \
         delete reservations --all -n default --ignore-not-found 2>/dev/null
 }
 
@@ -384,6 +388,7 @@ clean_broker_crds() {
 get_broker_available_cpu() {
     local cluster_id=$1
     kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
+        --request-timeout=10s \
         get clusteradvertisement "${cluster_id}-adv" -n default \
         -o jsonpath='{.spec.resources.available.cpu}' 2>/dev/null
 }
@@ -391,6 +396,7 @@ get_broker_available_cpu() {
 get_broker_available_memory() {
     local cluster_id=$1
     kubectl --kubeconfig "$KUBECONFIGS_DIR/$BROKER_CLUSTER.kubeconfig" \
+        --request-timeout=10s \
         get clusteradvertisement "${cluster_id}-adv" -n default \
         -o jsonpath='{.spec.resources.available.memory}' 2>/dev/null
 }
