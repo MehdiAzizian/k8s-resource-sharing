@@ -80,7 +80,7 @@ for t in $(seq 1 "$TRIALS"); do
 done
 
 # Summary
-avg_delay=$(awk -F, 'NR>1 && $4!="TIMEOUT" {s+=$4; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
+avg_delay=$(awk -F, 'NR>1 && $4!="TIMEOUT" {s+=$4; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
 log_info "Summary: avg_delay=${avg_delay}ms"
 
 # Cleanup

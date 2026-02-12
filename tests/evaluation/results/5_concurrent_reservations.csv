@@ -1,0 +1,7 @@
+concurrent_requests,avg_resolve_ms,min_resolve_ms,max_resolve_ms,timeouts
+1,79,79,79,0
+2,82,80,83,0
+4,348,76,1159,0
+6,616,75,1161,0
+8,757,82,1164,0
+10,720,72,1157,0
