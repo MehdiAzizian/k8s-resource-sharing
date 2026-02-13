@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# Test Resource Reservation Flow
+# Test Resource Reservation Flow with Liqo Peering
 # This script tests the full flow:
 # 1. Check cluster advertisements are registered
 # 2. Create a reservation request
 # 3. Verify reservation is processed
 # 4. Check instructions are created on both sides
+# 5. Verify Liqo peering is established (virtual nodes)
 # =============================================================================
 
 set -e
@@ -26,15 +27,15 @@ print_step() {
 }
 
 print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+    echo -e "${GREEN}  $1${NC}"
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
+    echo -e "${YELLOW}  $1${NC}"
 }
 
 print_error() {
-    echo -e "${RED}✗ $1${NC}"
+    echo -e "${RED}  $1${NC}"
 }
 
 # =============================================================================
@@ -167,6 +168,62 @@ if [ "$TARGET" == "agent-cluster-2" ]; then
 fi
 
 # =============================================================================
+# STEP 7: Verify Liqo Peering
+# =============================================================================
+print_step "STEP 7: Verifying Liqo Peering"
+
+PEERING_OK=false
+
+# Check if liqoctl is available
+if ! command -v liqoctl &> /dev/null; then
+    print_warning "liqoctl not installed - skipping Liqo verification"
+else
+    echo ""
+    echo "Waiting for Liqo peering to establish (checking every 5s, up to 60s)..."
+
+    # Wait for peering to be established
+    for i in $(seq 1 12); do
+        echo "  Checking peering status... (attempt $i/12)"
+
+        # Switch to requester cluster and check nodes
+        kubectl config use-context kind-agent-cluster-1 > /dev/null 2>&1
+
+        # Check for virtual node from the provider
+        VIRTUAL_NODES=$(kubectl get nodes 2>/dev/null | grep -i "liqo" || true)
+        if [ -n "$VIRTUAL_NODES" ]; then
+            PEERING_OK=true
+            break
+        fi
+
+        sleep 5
+    done
+
+    echo ""
+    if [ "$PEERING_OK" = true ]; then
+        print_success "Liqo peering established!"
+        echo ""
+        echo "  Nodes in requester cluster (agent-cluster-1):"
+        kubectl config use-context kind-agent-cluster-1 > /dev/null 2>&1
+        kubectl get nodes -o wide 2>/dev/null
+        echo ""
+        echo "  The virtual node represents resources from $TARGET"
+    else
+        print_warning "Virtual node not yet visible"
+        echo ""
+        echo "  This may take longer. Check manually:"
+        echo "    kubectl config use-context kind-agent-cluster-1"
+        echo "    kubectl get nodes"
+        echo "    liqoctl status"
+    fi
+
+    # Show Liqo status on requester
+    echo ""
+    echo "Liqo status on requester (agent-cluster-1):"
+    kubectl config use-context kind-agent-cluster-1 > /dev/null 2>&1
+    liqoctl status 2>/dev/null || print_warning "Could not get Liqo status"
+fi
+
+# =============================================================================
 # SUMMARY
 # =============================================================================
 print_step "TEST SUMMARY"
@@ -179,11 +236,17 @@ if [ "$PHASE" == "Reserved" ] || [ "$PHASE" == "Active" ]; then
     echo "  1. Agent-1 requested 500m CPU + 256Mi Memory"
     echo "  2. Broker selected best cluster: $TARGET"
     echo "  3. Resources were locked in $TARGET's advertisement"
-    echo "  4. Instructions will be created in both clusters"
-    echo ""
-    echo "Next steps:"
-    echo "  - Wait 30s for agents to poll and create instructions"
-    echo "  - Run this script again to see updated instruction status"
+    echo "  4. Instructions created in both requester and provider clusters"
+    if [ "$PEERING_OK" = true ]; then
+        echo "  5. Liqo peering established: agent-cluster-1 -> $TARGET"
+        echo "  6. Virtual node created in agent-cluster-1"
+        echo ""
+        echo "You can now schedule workloads on the virtual node!"
+        echo "  kubectl config use-context kind-agent-cluster-1"
+        echo "  kubectl get nodes  # Shows virtual node from $TARGET"
+    else
+        echo "  5. Liqo peering: check status with 'liqoctl status'"
+    fi
 else
     print_warning "Reservation not in expected state"
     echo ""

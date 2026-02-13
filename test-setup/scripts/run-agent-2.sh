@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR/../.."
 AGENT_DIR="$ROOT_DIR/liqo-resource-agent"
 CERT_DIR="$SCRIPT_DIR/../certs/agent2"
+KUBECONFIGS_DIR="$SCRIPT_DIR/../kubeconfigs"
 
 AGENT_ID="agent-cluster-2"
 BROKER_URL="https://localhost:8443"
@@ -58,6 +59,7 @@ echo "  Cluster ID:    $AGENT_ID"
 echo "  Transport:     HTTP"
 echo "  Broker URL:    $BROKER_URL"
 echo "  Cert Path:     $CERT_DIR"
+echo "  Kubeconfigs:   $KUBECONFIGS_DIR"
 echo "  Poll Interval: 30s"
 echo ""
 echo "Press Ctrl+C to stop"
@@ -73,4 +75,5 @@ echo ""
     --advertisement-namespace=default \
     --health-probe-bind-address=:8083 \
     --metrics-bind-address=0 \
-    --advertisement-requeue-interval=10s
+    --advertisement-requeue-interval=10s \
+    --kubeconfigs-dir="$KUBECONFIGS_DIR"

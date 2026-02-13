@@ -1,8 +1,12 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +23,14 @@ import (
 type ReservationInstructionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// KubeconfigsDir is the directory containing kubeconfig files for remote clusters.
+	// If set, the controller triggers Liqo peering automatically when an instruction arrives.
+	// Kubeconfig files are expected as: <KubeconfigsDir>/<clusterID>.kubeconfig
+	KubeconfigsDir string
+
+	// ClusterID is this agent's cluster identifier (needed to locate own kubeconfig).
+	ClusterID string
 }
 
 // +kubebuilder:rbac:groups=rear.fluidos.eu,resources=reservationinstructions,verbs=get;list;watch;update;patch
@@ -71,27 +83,37 @@ func (r *ReservationInstructionReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
-	// Process the instruction - this is where Liqo peering would be triggered in production
-	logger.Info(fmt.Sprintf("🎯 Reservation Instruction Received\n"+
-		"  └─ Reservation: %s\n"+
-		"  └─ Target Cluster: %s\n"+
-		"  └─ Resources: cpu=%s, memory=%s\n"+
-		"  └─ Message: %s\n"+
-		"  └─ Action: ready-to-offload-workload",
+	// Process the instruction
+	logger.Info(fmt.Sprintf("Reservation Instruction Received\n"+
+		"  Reservation: %s\n"+
+		"  Target Cluster: %s\n"+
+		"  Resources: cpu=%s, memory=%s\n"+
+		"  Message: %s",
 		instruction.Spec.ReservationName,
 		instruction.Spec.TargetClusterID,
 		instruction.Spec.RequestedCPU,
 		instruction.Spec.RequestedMemory,
 		instruction.Spec.Message))
 
-	// In a production system with Liqo integration, here you would:
-	// 1. Trigger Liqo peering with the target cluster
-	// 2. Configure virtual nodes for the requested resources
-	// 3. Set up namespace offloading policies
-	// 4. Create resource quotas for the borrowed resources
-	//
-	// For thesis demonstration, we log the instruction clearly to show
-	// the requester cluster is aware of where to send workloads.
+	// Trigger Liqo peering if kubeconfigs directory is configured
+	if r.KubeconfigsDir != "" {
+		logger.Info("Initiating Liqo peering with target cluster",
+			"targetCluster", instruction.Spec.TargetClusterID,
+			"kubeconfigsDir", r.KubeconfigsDir)
+
+		if err := r.executeLiqoPeering(ctx, instruction.Spec.TargetClusterID); err != nil {
+			logger.Error(err, "Liqo peering failed, will retry",
+				"targetCluster", instruction.Spec.TargetClusterID)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+
+		logger.Info("Liqo peering completed successfully",
+			"localCluster", r.ClusterID,
+			"remoteCluster", instruction.Spec.TargetClusterID)
+	} else {
+		logger.Info("Liqo peering skipped (--kubeconfigs-dir not set)",
+			"action", "ready-to-offload-workload")
+	}
 
 	// Mark as delivered
 	instruction.Status.Delivered = true
@@ -113,6 +135,46 @@ func (r *ReservationInstructionReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+
+// executeLiqoPeering runs liqoctl peer to establish Liqo peering with the target cluster.
+func (r *ReservationInstructionReconciler) executeLiqoPeering(ctx context.Context, targetClusterID string) error {
+	localKubeconfig := filepath.Join(r.KubeconfigsDir, r.ClusterID+".kubeconfig")
+	remoteKubeconfig := filepath.Join(r.KubeconfigsDir, targetClusterID+".kubeconfig")
+
+	// Verify kubeconfig files exist
+	if _, err := os.Stat(localKubeconfig); os.IsNotExist(err) {
+		return fmt.Errorf("local kubeconfig not found: %s", localKubeconfig)
+	}
+	if _, err := os.Stat(remoteKubeconfig); os.IsNotExist(err) {
+		return fmt.Errorf("remote kubeconfig not found for cluster %s: %s", targetClusterID, remoteKubeconfig)
+	}
+
+	// Check that liqoctl is available
+	if _, err := exec.LookPath("liqoctl"); err != nil {
+		return fmt.Errorf("liqoctl not found in PATH: %w", err)
+	}
+
+	// Run liqoctl peer with a 5-minute timeout
+	peerCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(peerCtx, "liqoctl", "peer",
+		"--kubeconfig", localKubeconfig,
+		"--remote-kubeconfig", remoteKubeconfig,
+		"--gw-server-service-type", "NodePort",
+	)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("liqoctl peer failed: %w\nstdout: %s\nstderr: %s",
+			err, stdout.String(), stderr.String())
+	}
+
+	return nil
 }
 
 func (r *ReservationInstructionReconciler) SetupWithManager(mgr ctrl.Manager) error {

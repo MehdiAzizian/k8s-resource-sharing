@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
 # Check Status of All Clusters
-# Shows advertisements, reservations, and instructions across all clusters
+# Shows advertisements, reservations, instructions, and Liqo peering status
 # =============================================================================
 
 # Colors for output
@@ -49,6 +49,14 @@ kubectl get reservationinstructions -o wide 2>/dev/null || echo "None found"
 subsection "ProviderInstructions (as provider)"
 kubectl get providerinstructions -o wide 2>/dev/null || echo "None found"
 
+subsection "Nodes (check for Liqo virtual nodes)"
+kubectl get nodes -o wide 2>/dev/null || echo "None found"
+
+if command -v liqoctl &> /dev/null; then
+    subsection "Liqo Peering Status"
+    liqoctl status peer 2>/dev/null || echo "No Liqo peering info"
+fi
+
 # =============================================================================
 # AGENT CLUSTER 2
 # =============================================================================
@@ -64,6 +72,14 @@ kubectl get reservationinstructions -o wide 2>/dev/null || echo "None found"
 
 subsection "ProviderInstructions (as provider)"
 kubectl get providerinstructions -o wide 2>/dev/null || echo "None found"
+
+subsection "Nodes (check for Liqo virtual nodes)"
+kubectl get nodes -o wide 2>/dev/null || echo "None found"
+
+if command -v liqoctl &> /dev/null; then
+    subsection "Liqo Peering Status"
+    liqoctl status peer 2>/dev/null || echo "No Liqo peering info"
+fi
 
 # Switch back to broker
 kubectl config use-context kind-broker-cluster > /dev/null 2>&1

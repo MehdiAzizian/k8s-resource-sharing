@@ -7,6 +7,7 @@ Scripts to test the full resource sharing flow using Kind clusters with cert-man
 - Docker running
 - `kind` installed
 - `kubectl` installed
+- `liqoctl` installed (for Liqo peering: `curl --fail -LS https://get.liqo.io | bash`)
 - Go 1.21+
 
 ---
@@ -138,31 +139,33 @@ test-reservation-provider   agent-cluster-1   500m   256Mi
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Test Environment                           │
-│                                                                 │
-│   ┌─────────────────┐                                           │
-│   │  broker-cluster │                                           │
-│   │  ───────────────│                                           │
-│   │  - cert-manager │                                           │
-│   │  - Broker API   │◄──────── HTTPS/mTLS ────────┐             │
-│   │  - CRDs:        │                             │             │
-│   │    ClusterAdv   │                             │             │
-│   │    Reservation  │                             │             │
-│   └────────┬────────┘                             │             │
-│            │                                      │             │
-│            │ HTTPS/mTLS                           │             │
-│            ▼                                      │             │
-│   ┌─────────────────┐                   ┌─────────────────┐     │
-│   │ agent-cluster-1 │                   │ agent-cluster-2 │     │
-│   │ ────────────────│                   │ ────────────────│     │
-│   │ - Agent         │                   │ - Agent         │     │
-│   │ - Requester     │                   │ - Provider      │     │
-│   │ - CRDs:         │                   │ - CRDs:         │     │
-│   │   ReservationInst                   │   ProviderInst  │     │
-│   └─────────────────┘                   └─────────────────┘     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                        Test Environment                              │
+│                                                                      │
+│   ┌──────────────────┐                                               │
+│   │  broker-cluster  │                                               │
+│   │  ────────────────│                                               │
+│   │  - cert-manager  │                                               │
+│   │  - Broker API    │◄──────── HTTPS/mTLS ────────┐                 │
+│   │  - CRDs:         │                             │                 │
+│   │    ClusterAdv    │                             │                 │
+│   │    Reservation   │                             │                 │
+│   └────────┬─────────┘                             │                 │
+│            │                                       │                 │
+│            │ HTTPS/mTLS                            │                 │
+│            ▼                                       │                 │
+│   ┌──────────────────┐    Liqo Peering    ┌──────────────────┐       │
+│   │ agent-cluster-1  │◄══════════════════►│ agent-cluster-2  │       │
+│   │ ─────────────────│  (auto via liqoctl)│ ─────────────────│       │
+│   │ - Agent + Liqo   │                   │ - Agent + Liqo   │       │
+│   │ - Requester      │                   │ - Provider       │       │
+│   │ - CRDs:          │                   │ - CRDs:          │       │
+│   │   ReservationInst│                   │   ProviderInst   │       │
+│   │ - Virtual Node   │                   │                  │       │
+│   │   (from cluster2)│                   │                  │       │
+│   └──────────────────┘                   └──────────────────┘       │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -183,15 +186,39 @@ Certificates are managed by cert-manager:
 
 | Script | Purpose |
 |--------|---------|
-| `setup-clusters.sh` | Creates 3 Kind clusters |
+| `setup-clusters.sh` | Creates 3 Kind clusters, exports kubeconfigs, installs Liqo |
 | `setup-certmanager.sh` | Installs cert-manager + certificates |
 | `extract-certs.sh` | Extracts certs to local files |
 | `run-broker.sh` | Runs broker |
 | `run-agent-1.sh` | Runs agent 1 (requester) |
 | `run-agent-2.sh` | Runs agent 2 (provider) |
-| `test-reservation.sh` | Creates test reservation |
-| `status.sh` | Shows status of all clusters |
+| `test-reservation.sh` | Creates test reservation + verifies Liqo peering |
+| `status.sh` | Shows status of all clusters + Liqo peering |
 | `cleanup.sh` | Deletes everything |
+
+---
+
+## Liqo Peering
+
+After a reservation is processed by the broker, the requester agent **automatically** establishes Liqo peering with the provider cluster. This creates a virtual node in the requester cluster that represents the provider's resources.
+
+### How It Works
+
+1. Broker decides `agent-cluster-2` should provide resources to `agent-cluster-1`
+2. Agent 1 receives a `ReservationInstruction` with `targetClusterID: agent-cluster-2`
+3. Agent 1 automatically runs: `liqoctl peer --kubeconfig <local> --remote-kubeconfig <remote> --gw-server-service-type NodePort`
+4. Liqo creates a virtual node in agent-cluster-1 representing agent-cluster-2's resources
+5. Workloads scheduled on the virtual node run on agent-cluster-2
+
+### Verify Peering
+
+```bash
+# Check virtual nodes in requester cluster
+kubectl --context kind-agent-cluster-1 get nodes
+
+# Check Liqo peering status
+liqoctl status peer --kubeconfig kubeconfigs/agent-cluster-1.kubeconfig
+```
 
 ---
 

@@ -2,6 +2,7 @@
 # =============================================================================
 # Setup Kind Clusters for Testing
 # Creates: 1 broker cluster + 2 agent clusters
+# Exports kubeconfigs and installs Liqo on agent clusters
 # =============================================================================
 
 set -e
@@ -9,6 +10,9 @@ set -e
 echo "=============================================="
 echo "  Creating Kind Clusters for Testing"
 echo "=============================================="
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KUBECONFIGS_DIR="$SCRIPT_DIR/../kubeconfigs"
 
 # Cluster names
 BROKER_CLUSTER="broker-cluster"
@@ -61,13 +65,63 @@ else
     echo "  -> Created!"
 fi
 
+# =============================================================================
+# Export kubeconfigs for Liqo peering
+# =============================================================================
 echo ""
 echo "=============================================="
-echo "  Clusters Created Successfully!"
+echo "  Exporting Kubeconfigs"
+echo "=============================================="
+
+mkdir -p "$KUBECONFIGS_DIR"
+
+echo ""
+echo "Exporting kubeconfig for $AGENT1_CLUSTER..."
+kind get kubeconfig --name $AGENT1_CLUSTER > "$KUBECONFIGS_DIR/$AGENT1_CLUSTER.kubeconfig"
+echo "  -> $KUBECONFIGS_DIR/$AGENT1_CLUSTER.kubeconfig"
+
+echo "Exporting kubeconfig for $AGENT2_CLUSTER..."
+kind get kubeconfig --name $AGENT2_CLUSTER > "$KUBECONFIGS_DIR/$AGENT2_CLUSTER.kubeconfig"
+echo "  -> $KUBECONFIGS_DIR/$AGENT2_CLUSTER.kubeconfig"
+
+# =============================================================================
+# Install Liqo on agent clusters
+# =============================================================================
+echo ""
+echo "=============================================="
+echo "  Installing Liqo on Agent Clusters"
+echo "=============================================="
+
+if ! command -v liqoctl &> /dev/null; then
+    echo ""
+    echo "WARNING: liqoctl is not installed!"
+    echo "Liqo peering will not work without it."
+    echo ""
+    echo "Install liqoctl:"
+    echo "  curl --fail -LS https://get.liqo.io | bash"
+    echo ""
+    echo "Skipping Liqo installation..."
+else
+    echo ""
+    echo "[1/2] Installing Liqo on $AGENT1_CLUSTER..."
+    liqoctl install --kubeconfig "$KUBECONFIGS_DIR/$AGENT1_CLUSTER.kubeconfig" --cluster-name $AGENT1_CLUSTER 2>&1 | tail -5
+    echo "  -> Liqo installed on $AGENT1_CLUSTER"
+
+    echo ""
+    echo "[2/2] Installing Liqo on $AGENT2_CLUSTER..."
+    liqoctl install --kubeconfig "$KUBECONFIGS_DIR/$AGENT2_CLUSTER.kubeconfig" --cluster-name $AGENT2_CLUSTER 2>&1 | tail -5
+    echo "  -> Liqo installed on $AGENT2_CLUSTER"
+fi
+
+echo ""
+echo "=============================================="
+echo "  Setup Complete!"
 echo "=============================================="
 echo ""
 echo "Available contexts:"
 kubectl config get-contexts | grep kind
+echo ""
+echo "Kubeconfigs exported to: $KUBECONFIGS_DIR/"
 echo ""
 echo "Switch context with:"
 echo "  kubectl config use-context kind-broker-cluster"

@@ -84,6 +84,7 @@ func main() {
 	var instructionNamespace string
 	var brokerNamespace string
 	var advertisementRequeueInterval time.Duration
+	var kubeconfigsDir string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -112,6 +113,7 @@ func main() {
 	flag.StringVar(&instructionNamespace, "instruction-namespace", "", "Namespace for ReservationInstruction objects (defaults to advertisement namespace)")
 	flag.StringVar(&brokerNamespace, "broker-namespace", "default", "Namespace containing broker CRDs")
 	flag.DurationVar(&advertisementRequeueInterval, "advertisement-requeue-interval", 30*time.Second, "Interval for periodic advertisement updates")
+	flag.StringVar(&kubeconfigsDir, "kubeconfigs-dir", "", "Directory containing kubeconfig files for Liqo peering (enables automatic peering)")
 
 	opts := zap.Options{
 		Development: true,
@@ -339,8 +341,10 @@ func main() {
 	}
 
 	if err = (&controller.ReservationInstructionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		KubeconfigsDir: kubeconfigsDir,
+		ClusterID:      clusterID,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ReservationInstruction")
 		os.Exit(1)
