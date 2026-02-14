@@ -15,7 +15,12 @@ This project enables Kubernetes clusters to share resources through a central br
 │  - Publish adv  │  mTLS   │  - Collect ads  │  mTLS   │  ◄──────── Agent│
 │  - Get instruct │         │  - Match reqs   │         │  - Publish adv  │
 │                 │         │  - Lock resources         │  - Get instruct │
-└─────────────────┘         └─────────────────┘         └─────────────────┘
+│                 │         └─────────────────┘         │                 │
+│                 │                                     │                 │
+│                 │◄═══════ Liqo Peering ══════════════►│                 │
+│  Virtual Node   │         (auto liqoctl peer)         │                 │
+│  (from B)       │                                     │                 │
+└─────────────────┘                                     └─────────────────┘
 ```
 
 ## Components
@@ -32,6 +37,7 @@ This project enables Kubernetes clusters to share resources through a central br
 - **mTLS Security** - All communication authenticated via certificates
 - **Race Condition Prevention** - Reserved field prevents double-booking
 - **Scoring Algorithm** - Selects best provider based on available resources
+- **Automatic Liqo Peering** - Agent triggers `liqoctl peer` to connect requester and provider clusters
 
 ## How It Works
 
@@ -40,6 +46,8 @@ This project enables Kubernetes clusters to share resources through a central br
 3. **Broker selects provider** - Decision engine picks best cluster
 4. **Resources are locked** - Reserved field updated to prevent conflicts
 5. **Instructions delivered** - Both requester and provider receive instructions
+6. **Liqo peering established** - Requester agent automatically peers with provider via `liqoctl`
+7. **Virtual node created** - Provider's resources appear as a virtual node in requester cluster
 
 ## Quick Start
 

@@ -9,6 +9,7 @@ The agent runs in each Kubernetes cluster to:
 - Publish advertisements to the broker
 - Receive reservation instructions
 - Track reserved resources
+- Automatically establish Liqo peering with provider clusters
 
 ## Architecture
 
@@ -37,6 +38,7 @@ The agent runs in each Kubernetes cluster to:
 | **HTTP Transport** | mTLS authenticated communication with broker |
 | **BrokerCommunicator Interface** | Protocol-agnostic design |
 | **Reserved Field Preservation** | Prevents double-booking race conditions |
+| **Automatic Liqo Peering** | Triggers `liqoctl peer` when ReservationInstruction arrives |
 
 ## Quick Start
 
@@ -47,13 +49,16 @@ make install
 # 2. Setup certificates
 kubectl apply -k config/certmanager/
 
-# 3. Run agent
+# 3. Run agent (with Liqo peering enabled)
 ./bin/agent \
   --broker-transport=http \
   --broker-url=https://broker:8443 \
   --broker-cert-path=/path/to/certs \
-  --cluster-id=my-cluster
+  --cluster-id=my-cluster \
+  --kubeconfigs-dir=/path/to/kubeconfigs
 ```
+
+The `--kubeconfigs-dir` flag enables automatic Liqo peering. The directory should contain kubeconfig files named `<cluster-id>.kubeconfig` for each cluster. If omitted, Liqo peering is skipped.
 
 ## Resource Calculation
 
@@ -69,7 +74,7 @@ Where:
 ## CRDs
 
 - **Advertisement** - Local cluster state published to broker
-- **ReservationInstruction** - Tells cluster to use remote resources
+- **ReservationInstruction** - Tells cluster to use remote resources (triggers Liqo peering)
 - **ProviderInstruction** - Tells cluster to reserve resources for others
 
 ## Project Structure
