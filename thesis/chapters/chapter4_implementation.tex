@@ -1,0 +1,381 @@
+% =============================================================================
+% Chapter 4: Implementation
+% =============================================================================
+% Required packages (add to your main preamble):
+%   \usepackage{listings}
+%   \usepackage{booktabs}
+%   \usepackage{tikz}
+%   \usetikzlibrary{shapes, arrows.meta, positioning}
+%   \usepackage{dirtree}  % optional, for directory trees
+% =============================================================================
+
+\chapter{Implementation}
+\label{ch:implementation}
+
+This chapter describes the implementation details of the broker and agent components, the technology choices, project structure, and the integration with Liqo for automatic cluster peering.
+
+
+% =============================================================================
+\section{Technology Stack}
+\label{sec:tech-stack}
+
+Table~\ref{tab:tech-stack} summarizes the key technologies used in the implementation and the rationale for each choice.
+
+\begin{table}[htbp]
+\centering
+\caption{Technology stack}
+\label{tab:tech-stack}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+\textbf{Technology} & \textbf{Version} & \textbf{Rationale} \\
+\midrule
+Go & 1.24 & Primary language of the Kubernetes ecosystem; strong concurrency, static typing, fast compilation \\
+controller-runtime & 0.22 & Standard framework for building Kubernetes operators; provides reconciliation loop, caching, leader election \\
+Kubebuilder & 4.x & Scaffolding tool for CRD definitions and controller boilerplate \\
+cert-manager & 1.x & Kubernetes-native certificate lifecycle management; automates CA creation and certificate rotation \\
+Kind & 0.20+ & Kubernetes-in-Docker for local multi-cluster testing \\
+Liqo & latest & Multi-cluster peering via virtual nodes and WireGuard tunnels \\
+Docker & 24+ & Container runtime for Kind clusters \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% =============================================================================
+\section{Project Structure}
+\label{sec:project-structure}
+
+The project is organized as a monorepo containing two independent Go modules: the broker and the agent. In a production deployment these would be separate repositories, but they are combined here to simplify testing and evaluation.
+
+\subsection{Broker Structure}
+
+\begin{verbatim}
+liqo-resource-broker/
+├── api/v1alpha1/              # CRD type definitions
+│   ├── clusteradvertisement_types.go
+│   └── reservation_types.go
+├── cmd/main.go                # Entry point, flag parsing, server startup
+├── internal/
+│   ├── api/                   # HTTP layer
+│   │   ├── server.go          # TLS server setup and route registration
+│   │   ├── handlers/          # POST/GET handlers for each endpoint
+│   │   └── middleware/        # mTLS authentication, logging
+│   ├── broker/
+│   │   └── decision.go        # Decision engine (filter, score, select)
+│   ├── controller/
+│   │   └── reservation_controller.go  # Reconciler for Reservation CRD
+│   └── resource/
+│       └── availability.go    # Available = Allocatable - Allocated - Reserved
+└── config/
+    ├── crd/                   # Generated CRD YAML manifests
+    └── certmanager/           # Certificate and Issuer definitions
+\end{verbatim}
+
+\subsection{Agent Structure}
+
+\begin{verbatim}
+liqo-resource-agent/
+├── api/v1alpha1/              # CRD type definitions
+│   ├── advertisement_types.go
+│   ├── reservationinstruction_types.go
+│   └── providerinstruction_types.go
+├── cmd/main.go                # Entry point, flag parsing, controller setup
+├── internal/
+│   ├── controller/
+│   │   ├── advertisement_controller.go       # Reconciles local Advertisement
+│   │   ├── reservationinstruction_controller.go  # Handles instructions + Liqo
+│   │   └── providerinstruction_controller.go # Handles provider instructions
+│   ├── metrics/
+│   │   └── collector.go       # Node/pod resource collection
+│   ├── publisher/
+│   │   └── broker_client.go   # Legacy Kubernetes transport
+│   └── transport/
+│       ├── interface.go       # BrokerCommunicator interface
+│       └── http/
+│           ├── client.go      # mTLS HTTP client with retry logic
+│           └── poller.go      # Periodic reservation polling
+└── config/
+    └── crd/                   # Generated CRD YAML manifests
+\end{verbatim}
+
+
+% =============================================================================
+\section{Broker Implementation}
+\label{sec:broker-impl}
+
+% -----------------------------------------------------------------------------
+\subsection{API Server}
+\label{subsec:api-server}
+
+The broker's HTTP server is implemented using Go's standard \texttt{net/http} package with TLS configuration for mutual authentication. The server initialization proceeds as follows:
+
+\begin{enumerate}
+    \item Load the server certificate and private key from the filesystem.
+    \item Load the Certificate Authority (CA) certificate into a \texttt{x509.CertPool}.
+    \item Configure \texttt{tls.Config} with \texttt{ClientAuth: tls.RequireAndVerifyClientCert} and the CA pool as \texttt{ClientCAs}.
+    \item Register API routes on an \texttt{http.ServeMux}.
+    \item Apply the middleware chain: authentication first, then logging.
+    \item Start the HTTPS listener.
+\end{enumerate}
+
+The middleware chain is applied in reverse order using a \texttt{Chain} function, ensuring that authentication executes before the request reaches any handler.
+
+% -----------------------------------------------------------------------------
+\subsection{Authentication Middleware}
+\label{subsec:auth-middleware}
+
+The authentication middleware extracts the cluster identity from the client certificate's Common Name (CN):
+
+\begin{lstlisting}[language=Go, caption={Client certificate validation middleware (simplified)}, label={lst:auth-middleware}]
+func ValidateClientCertificate(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.URL.Path == "/healthz" {
+            next.ServeHTTP(w, r)
+            return
+        }
+        if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+            http.Error(w, "client certificate required", 401)
+            return
+        }
+        clusterID := r.TLS.PeerCertificates[0].Subject.CommonName
+        ctx := context.WithValue(r.Context(), ClusterIDKey, clusterID)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+\end{lstlisting}
+
+Downstream handlers retrieve the cluster ID from the request context. The \texttt{PostAdvertisement} handler additionally validates that the \texttt{clusterID} in the request body matches the certificate CN, preventing a compromised agent from publishing data on behalf of another cluster.
+
+% -----------------------------------------------------------------------------
+\subsection{Advertisement Handler}
+\label{subsec:adv-handler}
+
+The \texttt{PostAdvertisement} handler receives a JSON-encoded advertisement from an agent and creates or updates the corresponding \texttt{ClusterAdvertisement} CRD in the broker cluster. A critical implementation detail is the \textbf{preservation of the Reserved field}:
+
+\begin{enumerate}
+    \item The handler fetches the existing \texttt{ClusterAdvertisement} (if any).
+    \item If found, it copies the existing \texttt{Resources.Reserved} value before overwriting the resource fields with the new data from the agent.
+    \item The updated resource (with preserved \texttt{Reserved}) is written back.
+\end{enumerate}
+
+This ensures that the broker's resource locking decisions are not lost when an agent publishes a routine advertisement update. Without this preservation, a race condition would occur: the broker locks resources (sets \texttt{Reserved}), and then the agent's next publish cycle overwrites \texttt{Reserved} with zero, effectively unlocking resources prematurely.
+
+The advertisement name in the broker follows the convention \texttt{<clusterID>-adv} (e.g., \texttt{agent-cluster-1-adv}).
+
+% -----------------------------------------------------------------------------
+\subsection{Reservation Controller}
+\label{subsec:reservation-controller}
+
+The \texttt{ReservationReconciler} is a Kubernetes controller that watches \texttt{Reservation} resources and drives them through their lifecycle. It implements the standard controller-runtime reconciliation pattern.
+
+\subsubsection{Reconciliation Logic}
+
+The reconciler handles each phase as follows:
+
+\begin{itemize}
+    \item \textbf{Pending:} Invokes the decision engine's \texttt{SelectBestCluster} method. If a provider is found, the reconciler locks resources using \texttt{retry.RetryOnConflict} to handle concurrent updates, then transitions the reservation to \textit{Reserved}. If no suitable cluster exists, the phase becomes \textit{Failed}.
+
+    \item \textbf{Reserved:} Monitors for agent acknowledgment (via a status condition). If the requester agent confirms activation, the phase transitions to \textit{Active}. If the reservation expires, resources are released and the phase becomes \textit{Released}.
+
+    \item \textbf{Active:} Monitors for explicit release signals or expiration. When either occurs, the controller calls \texttt{releaseResources} to decrement the provider's \texttt{Reserved} field and transitions to \textit{Released}.
+
+    \item \textbf{Failed / Released:} Terminal states with no further action.
+\end{itemize}
+
+A \texttt{Finalizer} ensures that resources are properly released even if the reservation is deleted directly:
+
+\begin{lstlisting}[language=Go, caption={Finalizer-based resource cleanup (simplified)}, label={lst:finalizer}]
+if !reservation.DeletionTimestamp.IsZero() {
+    if err := r.releaseResources(ctx, reservation); err != nil {
+        return ctrl.Result{}, err
+    }
+    controllerutil.RemoveFinalizer(reservation, ReservationFinalizer)
+    return ctrl.Result{}, r.Update(ctx, reservation)
+}
+\end{lstlisting}
+
+\subsubsection{Resource Locking}
+
+The resource locking procedure uses Kubernetes' optimistic concurrency control via \texttt{retry.RetryOnConflict}:
+
+\begin{enumerate}
+    \item Fetch the latest version of the target \texttt{ClusterAdvertisement}.
+    \item Verify sufficient resources are still available (another reservation may have consumed them).
+    \item Add the requested quantities to the \texttt{Reserved} field.
+    \item Attempt to update the resource. If a conflict occurs (another concurrent update changed the resource version), retry from step 1.
+\end{enumerate}
+
+This approach guarantees consistency without requiring external locking mechanisms.
+
+% -----------------------------------------------------------------------------
+\subsection{Decision Engine}
+\label{subsec:decision-engine}
+
+The decision engine implements the algorithm described in Section~\ref{sec:decision-algorithm}. The key implementation function is \texttt{SelectBestCluster}, which accepts the requester's cluster ID, requested CPU, requested memory, and priority, then returns the best matching \texttt{ClusterAdvertisement} or an error.
+
+The base score for display purposes (stored in \texttt{ClusterAdvertisement.Status.Score}) is computed on a 0--100 scale:
+
+\begin{equation}
+\text{BaseScore} = \frac{\text{Available}_{\text{cpu}}}{\text{Allocatable}_{\text{cpu}}} \times 50 + \frac{\text{Available}_{\text{mem}}}{\text{Allocatable}_{\text{mem}}} \times 50
+\end{equation}
+
+This provides a quick visual indicator of cluster health: a score of 100 means the cluster is fully available, while 0 means it is fully utilized.
+
+
+% =============================================================================
+\section{Agent Implementation}
+\label{sec:agent-impl}
+
+% -----------------------------------------------------------------------------
+\subsection{Resource Collector}
+\label{subsec:resource-collector}
+
+The \texttt{Collector} struct is responsible for gathering accurate resource metrics from the local cluster. It implements the \texttt{CollectClusterResources} method, which performs the following steps:
+
+\begin{enumerate}
+    \item \textbf{Node enumeration:} Lists all nodes and filters for ready nodes using the \texttt{NodeReady} condition.
+
+    \item \textbf{Capacity and allocatable:} For each ready node, sums the \texttt{Capacity} (total hardware) and \texttt{Allocatable} (capacity minus system reservations) values for CPU, memory, and GPU.
+
+    \item \textbf{Allocated resources:} Lists all pods and sums their resource \textit{requests} (not limits). For init containers, the maximum across all init containers is used rather than the sum, since init containers run sequentially. Pod overhead is also included.
+
+    \item \textbf{Reserved resources:} Lists all \texttt{ProviderInstruction} CRDs that are enforced and not expired, summing their requested CPU and memory. This accounts for resources locked by the broker for other clusters.
+
+    \item \textbf{Available computation:} Computes \texttt{Available = Allocatable - Allocated - Reserved}, clamping negative values to zero.
+\end{enumerate}
+
+The collector runs within the \texttt{AdvertisementReconciler}'s reconciliation loop, triggered periodically by the configurable \texttt{--advertisement-requeue-interval} (default: 30 seconds).
+
+% -----------------------------------------------------------------------------
+\subsection{HTTP Transport}
+\label{subsec:http-client}
+
+The \texttt{HTTPCommunicator} implements the \texttt{BrokerCommunicator} interface, which defines the protocol-agnostic contract for agent-broker communication:
+
+\begin{lstlisting}[language=Go, caption={BrokerCommunicator interface}, label={lst:communicator}]
+type BrokerCommunicator interface {
+    PublishAdvertisement(ctx context.Context,
+        adv *dto.AdvertisementDTO) error
+    FetchReservations(ctx context.Context,
+        clusterID string, role dto.Role) ([]*dto.ReservationDTO, error)
+    Ping(ctx context.Context) error
+    Close() error
+}
+\end{lstlisting}
+
+This interface enables adding new transport protocols (MQTT, gRPC) without modifying the controllers.
+
+\subsubsection{mTLS Client Configuration}
+
+The HTTP communicator creates a TLS-configured \texttt{http.Client} with:
+\begin{itemize}
+    \item Client certificate and key loaded from the filesystem.
+    \item The broker's CA certificate as the trusted root.
+    \item TLS 1.2 minimum version.
+    \item Connection pooling: 10 max idle connections, 90-second idle timeout.
+    \item Request timeout: 30 seconds.
+\end{itemize}
+
+\subsubsection{Reserved Field Preservation}
+
+Before publishing a new advertisement, the HTTP communicator first fetches the current advertisement from the broker via \texttt{GET /api/v1/advertisements/\{clusterID\}}. If the response contains a non-nil \texttt{Reserved} field, the communicator copies this value into the outgoing advertisement. This two-step process ensures that the agent never accidentally overwrites broker-side resource locks.
+
+\subsubsection{Retry with Exponential Backoff}
+
+The \texttt{doWithRetry} method implements retry logic for transient failures:
+\begin{itemize}
+    \item Maximum retries: 3 attempts.
+    \item Initial backoff: 1 second, doubling each attempt, capped at 16 seconds.
+    \item Only server errors (HTTP 5xx) and network errors trigger retries.
+    \item Client errors (4xx) are not retried.
+\end{itemize}
+
+% -----------------------------------------------------------------------------
+\subsection{Reservation Polling}
+\label{subsec:reservation-polling}
+
+The \texttt{ReservationPoller} runs as a background goroutine that periodically queries the broker for reservations involving this cluster. It polls with two separate queries:
+
+\begin{enumerate}
+    \item \texttt{GET /api/v1/reservations?clusterID=<id>\&role=requester} --- checks if this cluster has been assigned resources from another provider.
+    \item \texttt{GET /api/v1/reservations?clusterID=<id>\&role=provider} --- checks if this cluster has been selected to provide resources.
+\end{enumerate}
+
+For each returned reservation, the poller creates the corresponding local CRD (\texttt{ReservationInstruction} for the requester role, \texttt{ProviderInstruction} for the provider role) if it does not already exist. The default polling interval is 30 seconds.
+
+% -----------------------------------------------------------------------------
+\subsection{Instruction Controllers}
+\label{subsec:instruction-controllers}
+
+Two controllers handle the locally created instruction CRDs:
+
+\begin{itemize}
+    \item \textbf{ReservationInstructionReconciler:} Processes instructions on the requester side. When a new instruction arrives (with \texttt{delivered = false}), the controller triggers Liqo peering (described in Section~\ref{sec:liqo-impl}) and marks the instruction as delivered. It also monitors for expiration and marks expired instructions accordingly.
+
+    \item \textbf{ProviderInstructionReconciler:} Processes instructions on the provider side. It logs the reservation details and marks the instruction as enforced. The enforced instructions are included in the agent's resource calculation (\texttt{Reserved} component) via the \texttt{Collector}.
+\end{itemize}
+
+
+% =============================================================================
+\section{Liqo Integration}
+\label{sec:liqo-impl}
+
+The Liqo integration bridges the gap between the broker's resource \emph{decision} and the actual cluster \emph{interconnection}. When the requester agent receives a \texttt{ReservationInstruction}, it automatically establishes peering with the provider.
+
+\subsection{Configuration}
+
+The agent accepts a \texttt{--kubeconfigs-dir} flag specifying a directory containing kubeconfig files for all clusters in the federation. Each file is named \texttt{<clusterID>.kubeconfig}. This directory is populated during cluster setup (e.g., by exporting kubeconfigs from Kind clusters).
+
+If \texttt{--kubeconfigs-dir} is not set, Liqo peering is skipped and the instruction is marked as delivered immediately. This allows the system to operate without Liqo for testing or demonstration purposes.
+
+\subsection{Peering Execution}
+
+The \texttt{executeLiqoPeering} method in the \texttt{ReservationInstructionReconciler} performs the following steps:
+
+\begin{enumerate}
+    \item Constructs the local kubeconfig path: \texttt{<dir>/<ownClusterID>.kubeconfig}.
+    \item Constructs the remote kubeconfig path: \texttt{<dir>/<targetClusterID>.kubeconfig}.
+    \item Verifies both files exist and that \texttt{liqoctl} is available in the system PATH.
+    \item Executes \texttt{liqoctl peer} with a 5-minute timeout:
+\end{enumerate}
+
+\begin{lstlisting}[language=bash, caption={Liqo peering command}, label={lst:liqo-peer}]
+liqoctl peer \
+    --kubeconfig <local-kubeconfig> \
+    --remote-kubeconfig <remote-kubeconfig> \
+    --gw-server-service-type NodePort
+\end{lstlisting}
+
+The \texttt{--gw-server-service-type NodePort} flag is required for Kind clusters, which do not support the \texttt{LoadBalancer} service type. In a cloud deployment, this flag would be omitted or changed to \texttt{LoadBalancer}.
+
+If peering fails, the controller returns a \texttt{RequeueAfter: 30s} result, causing the reconciliation loop to retry. Upon success, the instruction's \texttt{delivered} status is set to \texttt{true}.
+
+\subsection{Result}
+
+After successful peering, Liqo creates the following resources:
+\begin{itemize}
+    \item A \textbf{virtual node} in the requester cluster representing the provider's resources.
+    \item A \textbf{WireGuard tunnel} for encrypted network communication.
+    \item \textbf{Identity and authentication} resources for cross-cluster API access.
+\end{itemize}
+
+From this point, standard Kubernetes scheduling can place pods on the virtual node, and Liqo transparently offloads them to the provider cluster.
+
+
+% =============================================================================
+\section{Testing}
+\label{sec:testing}
+
+The implementation includes unit tests for the critical components:
+
+\begin{itemize}
+    \item \textbf{Decision engine:} Tests cluster selection with various resource distributions, edge cases (single cluster, all clusters full, self-exclusion), and priority handling. Uses mock \texttt{ClusterAdvertisement} resources with fake Kubernetes clients.
+
+    \item \textbf{Resource calculation:} Tests the \texttt{CalculateAvailable} function with zero, positive, and negative (clamped) scenarios, including the Reserved field.
+
+    \item \textbf{Authentication middleware:} Tests certificate CN extraction, missing certificate handling, health endpoint bypass, and cluster ID context propagation.
+
+    \item \textbf{Metrics collector:} Tests node enumeration, pod request aggregation (including init container handling), and GPU resource tracking using fake Kubernetes clients.
+\end{itemize}
+
+Integration testing is performed through the test-setup scripts described in the \texttt{test-setup/} directory, which create three Kind clusters (one broker, two agents) and verify the complete reservation flow end-to-end. The evaluation suite (Chapter~\ref{ch:evaluation}) provides comprehensive system-level testing.
