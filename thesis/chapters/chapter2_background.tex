@@ -1,0 +1,255 @@
+% =============================================================================
+% Chapter 2: Background and Related Work
+% =============================================================================
+% Required packages:
+%   \usepackage{tikz}
+%   \usetikzlibrary{shapes, arrows.meta, positioning, fit}
+%   \usepackage{booktabs}
+%   \usepackage{listings}
+% =============================================================================
+
+\chapter{Background and Related Work}
+\label{ch:background}
+
+This chapter provides the technical background required to understand the design and implementation of the proposed system. It covers Kubernetes fundamentals, resource management, the extension mechanisms used to build the system, multi-cluster motivations, and existing solutions. The chapter concludes by identifying the gaps in current approaches that this thesis addresses.
+
+
+% =============================================================================
+\section{Kubernetes Overview}
+\label{sec:kubernetes-overview}
+
+Kubernetes~\cite{kubernetes} is an open-source container orchestration platform originally developed by Google and now maintained by the Cloud Native Computing Foundation (CNCF). It automates the deployment, scaling, and management of containerized applications across clusters of machines.
+
+A Kubernetes cluster consists of a \textbf{control plane} and one or more \textbf{worker nodes}. The control plane includes the API server (the central entry point for all operations), etcd (a distributed key-value store for cluster state), the scheduler (which assigns pods to nodes), and the controller manager (which runs reconciliation loops). Worker nodes run the \texttt{kubelet} agent, a container runtime (e.g., containerd), and \texttt{kube-proxy} for network routing.
+
+The fundamental unit of deployment is the \textbf{Pod}: one or more containers that share a network namespace and storage volumes. Higher-level abstractions---Deployments, StatefulSets, DaemonSets---manage pod lifecycle, replication, and updates.
+
+% -----------------------------------------------------------------------------
+\subsection{Resource Management in Kubernetes}
+\label{subsec:k8s-resources}
+
+Kubernetes manages compute resources (primarily CPU and memory) through a system of \textit{requests} and \textit{limits} defined in each container specification.
+
+\begin{itemize}
+    \item \textbf{Requests} specify the minimum resources a container needs. The scheduler uses requests to determine which node has sufficient capacity to host a pod. Resources specified as requests are \emph{guaranteed} to the container.
+
+    \item \textbf{Limits} specify the maximum resources a container may consume. If a container exceeds its memory limit, it is terminated (OOMKilled). If it exceeds its CPU limit, it is throttled.
+\end{itemize}
+
+At the node level, Kubernetes distinguishes between:
+
+\begin{itemize}
+    \item \textbf{Capacity}: The total physical resources of the node (e.g., 4 CPU cores, 16 GiB memory).
+    \item \textbf{Allocatable}: Capacity minus resources reserved for system daemons (\texttt{kubelet}, \texttt{kube-proxy}, container runtime, OS). This is the resource pool available for scheduling user pods.
+\end{itemize}
+
+The scheduler performs \textit{bin packing}: it sums the resource requests of all pods assigned to a node and ensures the total does not exceed the node's allocatable capacity. Crucially, the scheduler uses \emph{requests}, not \emph{limits} or actual usage, for placement decisions. This means a node can be ``fully allocated'' (all allocatable capacity claimed by requests) even if actual utilization is low.
+
+Resource quantities in Kubernetes use standard units: CPU is measured in \textit{millicores} (e.g., \texttt{500m} = 0.5 cores), and memory in bytes with standard suffixes (e.g., \texttt{256Mi} = 256 mebibytes).
+
+% -----------------------------------------------------------------------------
+\subsection{Custom Resource Definitions}
+\label{subsec:crds}
+
+Kubernetes is designed to be extensible. \textbf{Custom Resource Definitions} (CRDs) allow developers to define new resource types that behave like built-in resources (Pods, Services, etc.) but carry application-specific data.
+
+A CRD registration tells the Kubernetes API server to accept, store, and serve a new resource type. For example, registering a \texttt{ClusterAdvertisement} CRD enables commands like:
+
+\begin{lstlisting}[language=bash, caption={Interacting with a Custom Resource}]
+kubectl get clusteradvertisements
+kubectl describe clusteradvertisement agent-cluster-1-adv
+kubectl apply -f reservation.yaml
+\end{lstlisting}
+
+CRDs are stored in etcd alongside built-in resources and benefit from the same mechanisms: RBAC authorization, watch/notification, resource versioning (for optimistic concurrency control), and garbage collection.
+
+Each CRD instance has a \textbf{spec} (desired state, set by the user or an external system) and a \textbf{status} (observed state, set by the controller). This spec/status separation is a core Kubernetes convention that enables the declarative reconciliation model.
+
+% -----------------------------------------------------------------------------
+\subsection{Controller Runtime and Kubebuilder}
+\label{subsec:controller-runtime}
+
+A \textbf{controller} is a loop that watches for changes to resources and takes action to drive the actual state toward the desired state. This is the \textit{reconciliation pattern}: given the current state of a resource, determine what actions are needed and execute them.
+
+\texttt{controller-runtime}~\cite{controller-runtime} is the official Go library for building Kubernetes controllers. It provides:
+
+\begin{itemize}
+    \item \textbf{Manager}: Manages shared dependencies (Kubernetes client, cache, scheme) and runs all controllers.
+    \item \textbf{Reconciler interface}: Defines a single \texttt{Reconcile(ctx, Request) (Result, error)} method that the developer implements.
+    \item \textbf{Informer cache}: Maintains an in-memory cache of watched resources, reducing API server load.
+    \item \textbf{Leader election}: Ensures only one controller instance is active in a multi-replica deployment.
+    \item \textbf{Health probes}: Exposes \texttt{/healthz} and \texttt{/readyz} endpoints.
+\end{itemize}
+
+\textbf{Kubebuilder}~\cite{kubebuilder} is a scaffolding tool that generates the boilerplate code for CRD type definitions, controller stubs, RBAC manifests, and Makefile targets. Together, controller-runtime and Kubebuilder form the standard toolkit for building Kubernetes operators in Go.
+
+The reconciliation loop follows this pattern:
+
+\begin{enumerate}
+    \item A change to a watched resource triggers the reconciler.
+    \item The reconciler fetches the current state of the resource from the API server.
+    \item It compares the current state to the desired state.
+    \item It takes corrective action (create, update, or delete dependent resources).
+    \item It updates the resource's status to reflect the new observed state.
+    \item It returns a result: either success (stop), requeue after a delay, or error (immediate requeue with backoff).
+\end{enumerate}
+
+This pattern is \textit{level-triggered}, not edge-triggered: the reconciler acts on the current state, not on the specific event that triggered it. This makes controllers resilient to missed events, crashes, or restarts.
+
+
+% =============================================================================
+\section{Multi-Cluster Architectures}
+\label{sec:multi-cluster}
+
+Organizations adopt multi-cluster Kubernetes deployments for several reasons:
+
+\begin{itemize}
+    \item \textbf{Geographic distribution.} Clusters are placed close to end users to reduce latency. A global service might operate clusters in Europe, North America, and Asia.
+
+    \item \textbf{Fault isolation.} Separating workloads across clusters limits the blast radius of failures. A misconfiguration in one cluster does not affect others.
+
+    \item \textbf{Regulatory compliance.} Data residency requirements (e.g., GDPR) may mandate that certain data is processed within specific geographic boundaries, requiring dedicated clusters per region.
+
+    \item \textbf{Team autonomy.} Different teams or business units may manage their own clusters with independent upgrade cycles, security policies, and resource quotas.
+
+    \item \textbf{Edge computing.} IoT and edge scenarios deploy small clusters at edge locations (factories, retail stores, vehicles) that interact with central cloud clusters.
+\end{itemize}
+
+Multi-cluster architectures generally follow one of two patterns:
+
+\begin{itemize}
+    \item \textbf{Hub-and-spoke} (also called \textit{fleet management}): A central control plane manages or coordinates multiple spoke clusters. This is the model adopted by Kubernetes Federation, Rancher, and the system proposed in this thesis.
+
+    \item \textbf{Peer-to-peer}: Clusters discover and communicate with each other directly without a central coordinator. This is the model used by Liqo and service meshes like Istio multi-cluster.
+\end{itemize}
+
+The hub-and-spoke model provides a global view of all clusters and simplifies policy enforcement, but introduces a single point of coordination. The peer-to-peer model is more resilient to central failures but makes global optimization and consistent reservation difficult.
+
+
+% =============================================================================
+\section{Existing Solutions}
+\label{sec:existing-solutions}
+
+% -----------------------------------------------------------------------------
+\subsection{Kubernetes Federation (KubeFed)}
+\label{subsec:federation}
+
+Kubernetes Federation v2 (KubeFed)~\cite{kubefed} is a Kubernetes SIG project that enables managing workloads across multiple clusters from a single control plane. Its core concepts are:
+
+\begin{itemize}
+    \item \textbf{Federated Types}: Templates that define how resources (Deployments, Services, ConfigMaps) should be distributed across member clusters.
+    \item \textbf{Placement Policies}: Rules that determine which clusters receive which resources, based on labels, cluster selectors, or explicit lists.
+    \item \textbf{Override Policies}: Cluster-specific modifications to the template (e.g., different replica counts per region).
+\end{itemize}
+
+KubeFed's focus is on \textit{workload distribution}: ensuring that a Deployment runs in the correct set of clusters. It does not provide:
+\begin{itemize}
+    \item A resource marketplace where clusters advertise available capacity.
+    \item Reservation semantics that lock resources for a specific consumer.
+    \item Dynamic provider selection based on real-time availability.
+\end{itemize}
+
+Furthermore, KubeFed requires all member clusters to be registered and managed centrally, which may not be practical for loosely coupled federations where clusters belong to different organizations.
+
+% -----------------------------------------------------------------------------
+\subsection{Liqo}
+\label{subsec:liqo}
+
+Liqo~\cite{liqo} is an open-source project developed at Politecnico di Torino that enables transparent multi-cluster resource sharing. Its key mechanisms are:
+
+\begin{itemize}
+    \item \textbf{Peering}: Two clusters establish a bidirectional relationship. One cluster (the consumer) can offload pods to the other (the provider). Peering is initiated via \texttt{liqoctl peer} or through CRD-based configuration.
+
+    \item \textbf{Virtual Nodes}: When peering is established, Liqo creates a virtual node in the consumer cluster that represents the provider's resources. The Kubernetes scheduler can place pods on this virtual node as if it were a real node.
+
+    \item \textbf{Pod Offloading}: Pods scheduled on a virtual node are transparently created on the provider cluster. Liqo handles network routing, service discovery, and storage mapping.
+
+    \item \textbf{Network Fabric}: Liqo establishes encrypted WireGuard tunnels between clusters, extending the pod network across cluster boundaries.
+
+    \item \textbf{Authentication}: Liqo uses a token-based authentication mechanism with identity exchange during peering setup.
+\end{itemize}
+
+Liqo's strengths lie in its transparent pod offloading and network integration. However, its peer-to-peer model has limitations for resource sharing at scale:
+
+\begin{itemize}
+    \item \textbf{No centralized decision-making}: Each peering relationship is established manually or statically. There is no mechanism to automatically determine \emph{which} cluster should provide resources based on current availability.
+    \item \textbf{No reservation semantics}: When multiple consumers peer with the same provider, there is no coordination to prevent over-subscription.
+    \item \textbf{$O(n^2)$ peering complexity}: In a federation of $n$ clusters, fully meshed peering requires $n(n-1)/2$ relationships, which becomes impractical beyond a few dozen clusters.
+\end{itemize}
+
+% -----------------------------------------------------------------------------
+\subsection{FLUIDOS Project}
+\label{subsec:fluidos}
+
+FLUIDOS (Flexible, scaLable, secUre, and decentralIzeD Operating System)~\cite{fluidos} is a European Union Horizon Europe project that aims to create a ``computing continuum'' spanning edge devices, on-premise infrastructure, and public clouds. The project envisions a future where computing resources are traded and consumed as a utility, similar to electrical power.
+
+Key concepts from FLUIDOS relevant to this thesis:
+
+\begin{itemize}
+    \item \textbf{REAR (REsource Advertisement and Reservation)}: A protocol for clusters to advertise available resources and for consumers to reserve them. This thesis implements a concrete realization of REAR concepts.
+
+    \item \textbf{Node-level abstraction}: Resources are abstracted as ``flavours'' that describe computational capabilities without exposing infrastructure details.
+
+    \item \textbf{Decentralized discovery}: FLUIDOS envisions a network of brokers that can discover each other, though the current iteration focuses on single-broker scenarios.
+\end{itemize}
+
+This thesis extends FLUIDOS concepts by providing a working implementation of the broker-agent architecture with mTLS security, a concrete decision algorithm, and integration with Liqo for cluster interconnection.
+
+% -----------------------------------------------------------------------------
+\subsection{Other Approaches}
+\label{subsec:other-approaches}
+
+Several other projects address aspects of multi-cluster resource management:
+
+\begin{itemize}
+    \item \textbf{Admiralty}~\cite{admiralty}: A multi-cluster scheduling system that uses virtual nodes (similar to Liqo) to enable cross-cluster pod placement. It focuses on scheduling policies but does not implement resource reservation or a marketplace.
+
+    \item \textbf{Karmada}~\cite{karmada}: A Kubernetes management system for multi-cloud and multi-cluster scenarios, providing workload distribution, failover, and scaling. Like KubeFed, it focuses on workload placement rather than resource trading.
+
+    \item \textbf{Clusternet}~\cite{clusternet}: Manages multiple clusters as if they were virtual nodes in a parent cluster. It provides a unified API but does not address resource reservation or dynamic provider selection.
+
+    \item \textbf{Virtual Kubelet}~\cite{virtual-kubelet}: A kubelet implementation that connects Kubernetes to external APIs (e.g., Azure Container Instances, AWS Fargate). It enables offloading to specific backends but does not provide federation-wide resource matching.
+\end{itemize}
+
+
+% =============================================================================
+\section{Limitations of Current Approaches}
+\label{sec:limitations}
+
+Table~\ref{tab:comparison} summarizes the capabilities of existing solutions compared to the system proposed in this thesis.
+
+\begin{table}[htbp]
+\centering
+\caption{Comparison of multi-cluster resource sharing approaches}
+\label{tab:comparison}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Feature} & \textbf{KubeFed} & \textbf{Liqo} & \textbf{Karmada} & \textbf{Admiralty} & \textbf{This thesis} \\
+\midrule
+Resource advertisement    & --     & --     & --     & --     & \checkmark \\
+Centralized broker        & \checkmark & --     & \checkmark & --     & \checkmark \\
+Dynamic provider selection & --     & --     & --     & --     & \checkmark \\
+Reservation semantics     & --     & --     & --     & --     & \checkmark \\
+Race condition prevention & --     & --     & --     & --     & \checkmark \\
+Cluster peering           & --     & \checkmark & --     & --     & \checkmark \\
+Virtual nodes             & --     & \checkmark & --     & \checkmark & \checkmark \\
+Pod offloading            & --     & \checkmark & --     & \checkmark & \checkmark \\
+mTLS authentication       & --     & --     & --     & --     & \checkmark \\
+Lightweight agent         & --     & \checkmark & --     & --     & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The key gaps in existing approaches that this thesis addresses are:
+
+\begin{enumerate}
+    \item \textbf{No centralized resource coordination.} None of the surveyed systems provide a centralized point where all clusters' available resources are collected, compared, and matched to incoming requests using a scoring algorithm.
+
+    \item \textbf{No reservation marketplace.} There is no mechanism for a cluster to \emph{request} resources and receive a binding reservation that locks capacity on a specific provider, preventing other consumers from claiming the same resources.
+
+    \item \textbf{Race conditions not addressed.} In systems that allow concurrent access to shared resources (e.g., multiple consumers peering with the same provider), there is no mechanism to ensure that the total reserved capacity does not exceed what is actually available.
+
+    \item \textbf{Gap between decision and action.} Systems that perform resource matching (if any) do not automatically establish the network connectivity needed to actually use the matched resources. The system proposed in this thesis bridges this gap by automatically triggering Liqo peering after the broker makes a decision.
+\end{enumerate}
+
+These limitations motivate the design of a system that combines centralized brokerage (for global visibility and consistent reservations) with Liqo integration (for transparent cluster peering and workload offloading), secured by mTLS with certificate-based identity.
