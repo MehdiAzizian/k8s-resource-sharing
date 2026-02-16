@@ -98,12 +98,38 @@ func (h *Handler) PostAdvertisement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return updated advertisement (including Reserved field)
+	// Build response with updated advertisement
 	responseDTO := dto.FromClusterAdvertisement(clusterAdv)
+
+	// Piggyback provider instructions: include any Reserved-phase reservations
+	// where this cluster is the provider. This eliminates the need for polling.
+	var providerInstructions []*dto.ReservationDTO
+	reservationList := &brokerv1alpha1.ReservationList{}
+	if err := h.k8sClient.List(ctx, reservationList); err != nil {
+		logger.Error(err, "Failed to list reservations for provider instructions")
+	} else {
+		for i := range reservationList.Items {
+			rsv := &reservationList.Items[i]
+			if rsv.Status.Phase == brokerv1alpha1.ReservationPhaseReserved &&
+				rsv.Spec.TargetClusterID == incomingAdv.ClusterID {
+				providerInstructions = append(providerInstructions, dto.FromReservation(rsv))
+			}
+		}
+		if len(providerInstructions) > 0 {
+			logger.Info("Including provider instructions in advertisement response",
+				"clusterID", incomingAdv.ClusterID,
+				"count", len(providerInstructions))
+		}
+	}
+
+	response := &dto.AdvertisementResponseDTO{
+		Advertisement:        responseDTO,
+		ProviderInstructions: providerInstructions,
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(responseDTO); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Error(err, "Failed to encode response")
 	}
 }

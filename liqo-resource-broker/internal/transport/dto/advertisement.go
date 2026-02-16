@@ -28,3 +28,11 @@ type ResourceQuantitiesDTO struct {
 	GPU     string `json:"gpu,omitempty"`     // e.g., "2"
 	Storage string `json:"storage,omitempty"` // e.g., "100Gi"
 }
+
+// AdvertisementResponseDTO is the response for POST /api/v1/advertisements.
+// It wraps the updated advertisement and piggybacks any pending provider instructions,
+// eliminating the need for agents to poll for provider-role reservations.
+type AdvertisementResponseDTO struct {
+	Advertisement        *AdvertisementDTO `json:"advertisement"`
+	ProviderInstructions []*ReservationDTO `json:"providerInstructions,omitempty"`
+}

@@ -28,7 +28,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	"github.com/mehdiazizian/liqo-resource-agent/internal/publisher" // ← Add this
 	"github.com/mehdiazizian/liqo-resource-agent/internal/transport"
-	transporthttp "github.com/mehdiazizian/liqo-resource-agent/internal/transport/http"
+	transporthttp "github.com/mehdiazizian/liqo-resource-agent/internal/transport/http" // Used by NewCommunicator
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -320,9 +320,10 @@ func main() {
 		MetricsCollector: &metrics.Collector{
 			ClusterIDOverride: clusterID,
 		},
-		BrokerClient:       brokerClient,       // Legacy Kubernetes transport
-		BrokerCommunicator: brokerCommunicator, // New transport abstraction (HTTP)
-		RequeueInterval:    advertisementRequeueInterval,
+		BrokerClient:         brokerClient,         // Legacy Kubernetes transport
+		BrokerCommunicator:   brokerCommunicator,   // New transport abstraction (HTTP)
+		RequeueInterval:      advertisementRequeueInterval,
+		InstructionNamespace: instructionNamespace,  // For provider instructions from response
 		TargetKey: types.NamespacedName{
 			Name:      advertisementName,
 			Namespace: advertisementNamespace,
@@ -350,6 +351,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ResourceRequest controller: handles synchronous reservation requests to the broker
+	if err = (&controller.ResourceRequestReconciler{
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		BrokerCommunicator:   brokerCommunicator,
+		InstructionNamespace: instructionNamespace,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ResourceRequest")
+		os.Exit(1)
+	}
+
 	// Start Reservation Watcher if broker client is available (Kubernetes transport)
 	if brokerClient != nil && brokerClient.Enabled {
 		watcher := publisher.NewReservationWatcher(brokerClient, mgr.GetClient(), instructionNamespace)
@@ -358,23 +370,6 @@ func main() {
 				setupLog.Error(err, "Reservation watcher failed")
 			}
 		}()
-	}
-
-	// Start Reservation Poller if using HTTP transport
-	if brokerTransport == "http" && brokerCommunicator != nil {
-		poller := transporthttp.NewReservationPoller(
-			brokerCommunicator,
-			clusterID,
-			30*time.Second, // Poll every 30 seconds
-			mgr.GetClient(),
-			instructionNamespace,
-		)
-		go func() {
-			if err := poller.Start(context.Background()); err != nil {
-				setupLog.Error(err, "Reservation poller failed")
-			}
-		}()
-		setupLog.Info("HTTP reservation poller started", "interval", "30s")
 	}
 	// +kubebuilder:scaffold:builder
 

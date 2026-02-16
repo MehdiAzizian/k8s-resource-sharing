@@ -19,3 +19,11 @@ type ReservationStatusDTO struct {
 	ReservedAt *time.Time `json:"reservedAt,omitempty"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 }
+
+// ReservationRequestDTO is sent by an agent to request a resource reservation.
+// The requesterID is extracted from the mTLS certificate (not in the body) to prevent spoofing.
+type ReservationRequestDTO struct {
+	RequestedResources ResourceQuantitiesDTO `json:"requestedResources"`
+	Priority           int32                 `json:"priority,omitempty"`
+	Duration           string                `json:"duration,omitempty"` // e.g., "1h", "30m"
+}

@@ -41,12 +41,13 @@ import (
 // AdvertisementReconciler reconciles an Advertisement object
 type AdvertisementReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
-	MetricsCollector   *metrics.Collector
-	BrokerClient       *publisher.BrokerClient      // Legacy Kubernetes transport
-	BrokerCommunicator transport.BrokerCommunicator // New transport abstraction
-	TargetKey          types.NamespacedName
-	RequeueInterval    time.Duration // Configurable requeue interval
+	Scheme               *runtime.Scheme
+	MetricsCollector     *metrics.Collector
+	BrokerClient         *publisher.BrokerClient      // Legacy Kubernetes transport
+	BrokerCommunicator   transport.BrokerCommunicator // New transport abstraction
+	TargetKey            types.NamespacedName
+	RequeueInterval      time.Duration // Configurable requeue interval
+	InstructionNamespace string        // Namespace for ProviderInstruction CRDs
 }
 
 // +kubebuilder:rbac:groups=rear.fluidos.eu,resources=advertisements,verbs=get;list;watch;create;update;patch;delete
@@ -129,29 +130,95 @@ func (r *AdvertisementReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // publishToBroker publishes the advertisement to the broker via the configured transport.
+// Also processes any provider instructions piggybacked in the broker response.
 // Returns nil if no transport is configured (local-only mode).
 func (r *AdvertisementReconciler) publishToBroker(ctx context.Context, advertisement *rearv1alpha1.Advertisement, clusterID string) error {
 	logger := log.FromContext(ctx)
 
 	if r.BrokerCommunicator != nil {
 		advDTO := dto.ToAdvertisementDTO(advertisement)
-		if err := r.BrokerCommunicator.PublishAdvertisement(ctx, advDTO); err != nil {
-			logger.Error(err, fmt.Sprintf("❌ Failed to publish to broker (will retry)\n  └─ Cluster: %s", clusterID))
+		providerInstructions, err := r.BrokerCommunicator.PublishAdvertisement(ctx, advDTO)
+		if err != nil {
+			logger.Error(err, fmt.Sprintf("Failed to publish to broker (will retry)\n  Cluster: %s", clusterID))
 			return err
 		}
-		logger.Info(fmt.Sprintf("✅ Published to broker successfully (via transport abstraction)\n  └─ Cluster: %s", clusterID))
+		logger.Info(fmt.Sprintf("Published to broker successfully (via transport abstraction)\n  Cluster: %s", clusterID))
+
+		// Process piggybacked provider instructions
+		r.processProviderInstructions(ctx, providerInstructions, clusterID)
 		return nil
 	}
 
 	if r.BrokerClient != nil && r.BrokerClient.Enabled {
 		if err := r.BrokerClient.PublishAdvertisement(ctx, advertisement); err != nil {
-			logger.Error(err, fmt.Sprintf("❌ Failed to publish to broker (will retry)\n  └─ Cluster: %s", clusterID))
+			logger.Error(err, fmt.Sprintf("Failed to publish to broker (will retry)\n  Cluster: %s", clusterID))
 			return err
 		}
-		logger.Info(fmt.Sprintf("✅ Published to broker successfully (via legacy client)\n  └─ Cluster: %s", clusterID))
+		logger.Info(fmt.Sprintf("Published to broker successfully (via legacy client)\n  Cluster: %s", clusterID))
 	}
 
 	return nil
+}
+
+// processProviderInstructions creates ProviderInstruction CRDs from broker response.
+// These are piggybacked on the advertisement POST response, eliminating the need
+// for a separate polling loop.
+func (r *AdvertisementReconciler) processProviderInstructions(ctx context.Context, instructions []*dto.ReservationDTO, clusterID string) {
+	logger := log.FromContext(ctx)
+
+	for _, rsv := range instructions {
+		if rsv.Status.Phase != "Reserved" {
+			continue
+		}
+
+		instructionName := fmt.Sprintf("%s-provider", rsv.ID)
+		ns := r.InstructionNamespace
+		if ns == "" {
+			ns = r.TargetKey.Namespace
+		}
+
+		// Check if instruction already exists
+		existing := &rearv1alpha1.ProviderInstruction{}
+		err := r.Get(ctx, types.NamespacedName{Name: instructionName, Namespace: ns}, existing)
+		if err == nil {
+			continue // Already exists
+		}
+
+		var expiresAt *metav1.Time
+		if rsv.Status.ExpiresAt != nil {
+			expiresAt = &metav1.Time{Time: *rsv.Status.ExpiresAt}
+		}
+
+		instruction := &rearv1alpha1.ProviderInstruction{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      instructionName,
+				Namespace: ns,
+			},
+			Spec: rearv1alpha1.ProviderInstructionSpec{
+				ReservationName:    rsv.ID,
+				RequesterClusterID: rsv.RequesterID,
+				RequestedCPU:       rsv.RequestedResources.CPU,
+				RequestedMemory:    rsv.RequestedResources.Memory,
+				Message: fmt.Sprintf("Hold %s CPU / %s Memory for requester %s",
+					rsv.RequestedResources.CPU,
+					rsv.RequestedResources.Memory,
+					rsv.RequesterID),
+				ExpiresAt: expiresAt,
+			},
+		}
+
+		if err := r.Create(ctx, instruction); err != nil {
+			logger.Error(err, "Failed to create provider instruction",
+				"reservation", rsv.ID,
+				"requester", rsv.RequesterID)
+		} else {
+			logger.Info("Created provider instruction from advertisement response",
+				"reservation", rsv.ID,
+				"requester", rsv.RequesterID,
+				"cpu", rsv.RequestedResources.CPU,
+				"memory", rsv.RequestedResources.Memory)
+		}
+	}
 }
 
 // updateStatus updates the Advertisement status

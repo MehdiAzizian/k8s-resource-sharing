@@ -9,11 +9,15 @@ import (
 // BrokerCommunicator abstracts broker communication protocol (agent-side interface)
 // Implementations: HTTP REST API, Kubernetes CRD-based, MQTT, etc.
 type BrokerCommunicator interface {
-	// PublishAdvertisement publishes cluster resource advertisement to broker
-	PublishAdvertisement(ctx context.Context, adv *dto.AdvertisementDTO) error
+	// PublishAdvertisement publishes cluster resource advertisement to broker.
+	// Returns any piggybacked provider instructions from the broker response,
+	// eliminating the need for separate polling.
+	PublishAdvertisement(ctx context.Context, adv *dto.AdvertisementDTO) ([]*dto.ReservationDTO, error)
 
-	// FetchReservations retrieves reservations for this cluster by role
-	FetchReservations(ctx context.Context, clusterID string, role dto.Role) ([]*dto.ReservationDTO, error)
+	// RequestReservation sends a synchronous reservation request to the broker.
+	// The broker decides and reserves resources inline, returning the instruction
+	// in the response. No polling needed.
+	RequestReservation(ctx context.Context, req *dto.ReservationRequestDTO) (*dto.ReservationDTO, error)
 
 	// Ping checks connectivity to broker
 	Ping(ctx context.Context) error

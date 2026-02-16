@@ -240,8 +240,8 @@ func main() {
 			"certPath", httpCertPath,
 			"namespace", httpNamespace)
 
-		// Create handlers with k8s client
-		handler := handlers.NewHandler(mgr.GetClient(), httpNamespace)
+		// Create handlers with k8s client and decision engine
+		handler := handlers.NewHandler(mgr.GetClient(), httpNamespace, decisionEngine)
 
 		// Create and start HTTP server
 		server, err := api.NewServer(httpPort, httpCertPath, handler)

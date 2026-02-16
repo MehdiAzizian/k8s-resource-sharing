@@ -74,9 +74,10 @@ func NewHTTPCommunicator(brokerURL, certPath, clusterID string) (*HTTPCommunicat
 	}, nil
 }
 
-// PublishAdvertisement publishes cluster advertisement to broker via HTTP
-// CRITICAL: Implements Reserved field preservation logic
-func (c *HTTPCommunicator) PublishAdvertisement(ctx context.Context, adv *dto.AdvertisementDTO) error {
+// PublishAdvertisement publishes cluster advertisement to broker via HTTP.
+// CRITICAL: Implements Reserved field preservation logic.
+// Returns any piggybacked provider instructions from the broker response.
+func (c *HTTPCommunicator) PublishAdvertisement(ctx context.Context, adv *dto.AdvertisementDTO) ([]*dto.ReservationDTO, error) {
 	logger := log.FromContext(ctx).WithName("http-communicator")
 
 	// STEP 1: Fetch existing advertisement to get Reserved field
@@ -85,7 +86,7 @@ func (c *HTTPCommunicator) PublishAdvertisement(ctx context.Context, adv *dto.Ad
 
 	req, err := http.NewRequestWithContext(ctx, "GET", existingURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create GET request: %w", err)
+		return nil, fmt.Errorf("failed to create GET request: %w", err)
 	}
 
 	resp, err := c.doWithRetry(ctx, req)
@@ -108,73 +109,85 @@ func (c *HTTPCommunicator) PublishAdvertisement(ctx context.Context, adv *dto.Ad
 	// STEP 2: Publish advertisement with preserved Reserved field
 	body, err := json.Marshal(adv)
 	if err != nil {
-		return fmt.Errorf("failed to marshal advertisement: %w", err)
+		return nil, fmt.Errorf("failed to marshal advertisement: %w", err)
 	}
 
 	postURL := fmt.Sprintf("%s/api/v1/advertisements", c.baseURL)
 	req, err = http.NewRequestWithContext(ctx, "POST", postURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to create POST request: %w", err)
+		return nil, fmt.Errorf("failed to create POST request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err = c.doWithRetry(ctx, req)
 	if err != nil {
-		return fmt.Errorf("failed to publish advertisement: %w", err)
+		return nil, fmt.Errorf("failed to publish advertisement: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("broker returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("broker returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// STEP 3: Parse response which includes provider instructions
+	var advResponse dto.AdvertisementResponseDTO
+	if err := json.NewDecoder(resp.Body).Decode(&advResponse); err != nil {
+		// Non-fatal: advertisement was published, just can't parse provider instructions
+		logger.Error(err, "Failed to decode advertisement response (advertisement was published)")
+		return nil, nil
 	}
 
 	logger.Info("Advertisement published successfully",
 		"clusterID", adv.ClusterID,
 		"availableCPU", adv.Resources.Available.CPU,
-		"availableMemory", adv.Resources.Available.Memory)
+		"availableMemory", adv.Resources.Available.Memory,
+		"providerInstructions", len(advResponse.ProviderInstructions))
 
-	return nil
+	return advResponse.ProviderInstructions, nil
 }
 
-// FetchReservations retrieves reservations for this cluster from broker
-func (c *HTTPCommunicator) FetchReservations(ctx context.Context, clusterID string, role dto.Role) ([]*dto.ReservationDTO, error) {
+// RequestReservation sends a synchronous reservation request to the broker.
+// The broker runs its decision engine inline and returns the instruction
+// in the response. No polling needed.
+func (c *HTTPCommunicator) RequestReservation(ctx context.Context, reqDTO *dto.ReservationRequestDTO) (*dto.ReservationDTO, error) {
 	logger := log.FromContext(ctx).WithName("http-communicator")
 
-	url := fmt.Sprintf("%s/api/v1/reservations?clusterID=%s&role=%s",
-		c.baseURL, clusterID, role)
+	body, err := json.Marshal(reqDTO)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal reservation request: %w", err)
+	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	url := fmt.Sprintf("%s/api/v1/reservations", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.doWithRetry(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch reservations: %w", err)
+		return nil, fmt.Errorf("failed to send reservation request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("broker returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	var response struct {
-		Reservations []*dto.ReservationDTO `json:"reservations"`
+	var reservation dto.ReservationDTO
+	if err := json.NewDecoder(resp.Body).Decode(&reservation); err != nil {
+		return nil, fmt.Errorf("failed to decode reservation response: %w", err)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
+	logger.Info("Reservation created synchronously",
+		"reservationID", reservation.ID,
+		"targetCluster", reservation.TargetClusterID,
+		"cpu", reservation.RequestedResources.CPU,
+		"memory", reservation.RequestedResources.Memory)
 
-	if len(response.Reservations) > 0 {
-		logger.Info("Fetched reservations",
-			"role", role,
-			"count", len(response.Reservations))
-	}
-
-	return response.Reservations, nil
+	return &reservation, nil
 }
 
 // Ping checks connectivity to broker
