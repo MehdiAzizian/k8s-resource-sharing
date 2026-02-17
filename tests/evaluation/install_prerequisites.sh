@@ -44,7 +44,10 @@ export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
 # 4. Kind
 echo "[4/6] Installing Kind..."
 if ! command -v kind &>/dev/null; then
-    go install sigs.k8s.io/kind@latest
+    KIND_VERSION=$(curl -sL https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+    curl -sL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" -o /tmp/kind
+    chmod +x /tmp/kind
+    sudo mv /tmp/kind /usr/local/bin/kind
     echo "  -> Kind installed: $(kind version)"
 else
     echo "  -> Kind already installed: $(kind version)"
