@@ -52,7 +52,7 @@ echo "agents,avg_memory_mb,max_memory_mb,min_memory_mb" > "$OUTPUT_MEM"
 
 # Pre-create all agent clusters needed (max count)
 max_count=${AGENT_COUNTS[-1]}
-create_clusters_parallel "agent" "$max_count" 10
+create_clusters_parallel "agent" "$max_count" 5
 for i in $(seq 1 "$max_count"); do
     install_agent_crds "agent-$i"
 done

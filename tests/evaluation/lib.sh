@@ -114,11 +114,25 @@ EOF
 # ============================================================
 create_cluster() {
     local name=$1
+    local max_retries=3
     if kind get clusters 2>/dev/null | grep -qx "$name"; then
         log_info "Cluster '$name' already exists"
     else
-        log_info "Creating Kind cluster '$name'..."
-        kind create cluster --name "$name" --wait 180s 2>&1 | tail -1
+        local attempt
+        for attempt in $(seq 1 "$max_retries"); do
+            log_info "Creating Kind cluster '$name'... (attempt $attempt/$max_retries)"
+            if kind create cluster --name "$name" --wait 180s 2>&1 | tail -1; then
+                break
+            fi
+            if [[ $attempt -lt $max_retries ]]; then
+                log_warn "Cluster '$name' creation failed, retrying in 5s..."
+                kind delete cluster --name "$name" 2>/dev/null || true
+                sleep 5
+            else
+                log_error "Cluster '$name' failed after $max_retries attempts"
+                return 1
+            fi
+        done
     fi
     kind get kubeconfig --name "$name" > "$KUBECONFIGS_DIR/$name.kubeconfig"
 }
