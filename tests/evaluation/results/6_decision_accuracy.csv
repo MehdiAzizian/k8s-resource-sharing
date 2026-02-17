@@ -1,0 +1,6 @@
+scenario,requested_cpu,requested_mem,chosen_cluster,expected_cluster,pass_rate
+small_request,200m,128Mi,agent-3,agent-3,5/5
+medium_request,1,512Mi,agent-3,agent-3,5/5
+large_request,2,1Gi,agent-2,not-agent-1,5/5
+consecutive,1,512Mi,agent-3 then agent-3,both succeed,5/5
+impossible_request,100,500Gi,REJECTED,REJECTED,5/5

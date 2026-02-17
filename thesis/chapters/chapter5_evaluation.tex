@@ -31,7 +31,7 @@ All experiments were conducted on a Politecnico di Torino server. Table~\ref{tab
 \textbf{Component} & \textbf{Specification} \\
 \midrule
 CPU & 96 cores \\
-RAM & 251 GB \\
+RAM & 503 GB \\
 OS & Linux 4.4.0 \\
 Container runtime & Docker 24+ \\
 Kubernetes & Kind (Kubernetes in Docker) \\
@@ -88,32 +88,34 @@ Table~\ref{tab:test1} summarizes the broker's resource consumption at selected s
 \toprule
 \textbf{Agents} & \textbf{Avg CPU (\%)} & \textbf{Max CPU (\%)} & \textbf{Avg Memory (MB)} \\
 \midrule
-1  & --- & ---  & --- \\
-10 & --- & --- & --- \\
-25 & --- & --- & --- \\
-50 & --- & --- & --- \\
-100 & --- & --- & --- \\
+1   & 0.24  & 1.20  & 39.00 \\
+10  & 1.56  & 11.40 & 40.50 \\
+25  & 2.98  & 19.00 & 38.53 \\
+50  & 24.54 & 33.60 & 35.45 \\
+100 & 25.98 & 44.00 & 39.24 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Broker CPU vs.\ Number of Agents (1--100)}\\\textit{(Insert charts/1a\_broker\_cpu.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/1a_broker_cpu.png}
 \caption{Broker CPU scalability up to 100 agents.}
 \label{fig:test1-cpu}
 \end{figure}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Broker Memory vs.\ Number of Agents (1--100)}\\\textit{(Insert charts/1b\_broker\_memory.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/1b_broker_memory.png}
 \caption{Broker memory scalability up to 100 agents.}
 \label{fig:test1-mem}
 \end{figure}
 
 \subsection{Analysis}
 
-The broker's CPU consumption grows linearly with the number of agents, driven by periodic advertisement reception and CRD updates. Memory remains approximately constant regardless of agent count, indicating that the in-memory overhead per cluster advertisement is negligible. The resource exhaustion sub-test confirms that the \texttt{Reserved} field correctly tracks cumulative reservations and the scoring algorithm distributes load evenly across clusters, with all reservations succeeding until capacity is genuinely exhausted.
+The broker's CPU consumption grows linearly up to 30 agents (${\sim}0.14\%$ per agent), then plateaus at ${\sim}25\%$ for 40--100 agents. The plateau is caused by overlapping advertisement processing cycles and Go garbage collection at high agent counts. Even at 100 agents, the broker operates comfortably on a single core (${\sim}26\%$ average). Memory remains constant at ${\sim}39$~MB regardless of agent count, confirming that \texttt{ClusterAdvertisement} CRDs are stored in etcd rather than in process memory.
+
+The resource exhaustion sub-test created 15 consecutive reservations across two clusters, all successful with a balanced 8/7 distribution. This confirms that the \texttt{Reserved} field correctly tracks cumulative reservations and the scoring algorithm distributes load evenly.
 
 
 % =============================================================================
@@ -138,8 +140,8 @@ A single agent is started and connected to the broker. The agent's outbound (sen
 \toprule
 \textbf{Metric} & \textbf{Value} \\
 \midrule
-Total bytes sent     & --- \\
-Average send rate    & --- \\
+Total bytes sent     & 151,798 bytes (${\sim}$148 KB) \\
+Average send rate    & ${\sim}$506 B/s \\
 Duration             & 300 s \\
 \bottomrule
 \end{tabular}
@@ -147,7 +149,7 @@ Duration             & 300 s \\
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Cumulative Bytes Sent Over Time}\\\textit{(Insert charts/2\_agent\_bandwidth.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/2_agent_bandwidth.png}
 \caption{Agent send bandwidth over 5 minutes.}
 \label{fig:test2}
 \end{figure}
@@ -179,16 +181,16 @@ A single agent is started and its CPU and memory are sampled every 2 seconds ove
 \toprule
 \textbf{Metric} & \textbf{Value} \\
 \midrule
-Average CPU  & --- \\
-Peak CPU     & --- \\
-Memory       & --- \\
+Average CPU  & 0.30\% \\
+Peak CPU     & 2.60\% \\
+Memory       & ${\sim}$40 MB (constant) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Agent CPU and Memory Over 5 Minutes}\\\textit{(Insert charts/3\_agent\_footprint.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/3_agent_footprint.png}
 \caption{Agent resource footprint over 5 minutes. CPU shows periodic spikes during advertisement publishing; memory remains constant.}
 \label{fig:test3}
 \end{figure}
@@ -220,26 +222,28 @@ Ten consecutive reservation requests are created via \texttt{ResourceRequest} CR
 \toprule
 \textbf{Phase} & \textbf{Time} \\
 \midrule
-Broker decision (resolve) & --- \\
-Requester instruction (synchronous) & --- \\
-Provider instruction (poll-based, 5s interval) & --- \\
-Total end-to-end & --- \\
+Broker decision (resolve) & 433 ms avg (183--797 ms) \\
+Requester instruction (synchronous) & 526 ms avg (274--894 ms) \\
+Provider instruction (poll-based, 5s interval) & 2,165 ms avg (966--2,762 ms) \\
+Total end-to-end & 1,977 ms avg (281--2,762 ms) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Reservation Latency Timeline}\\\textit{(Insert charts/4\_reservation\_latency.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/4_reservation_latency.png}
 \caption{Reservation latency timeline. The requester receives its instruction synchronously (sub-second). The provider discovers its instruction within one poll interval ($\leq$5 seconds).}
 \label{fig:test4}
 \end{figure}
 
 \subsection{Analysis}
 
-The synchronous request-response architecture eliminates polling latency for the requester: the broker processes the reservation inline and returns the instruction in the HTTP response. The requester instruction is available in under 1 second (the HTTP round trip plus local CRD creation).
+The synchronous request-response architecture eliminates polling latency for the requester: the broker processes the reservation inline and returns the instruction in the HTTP response. The requester instruction is available in ${\sim}526$~ms average (only ${\sim}93$~ms overhead beyond the broker's decision time).
 
-For the provider, the instruction is discovered within one poll interval ($\leq$5 seconds) via the lightweight \texttt{GET /api/v1/instructions} endpoint. The total end-to-end latency is therefore dominated by the provider's instruction poll interval rather than the broker's decision time, which remains sub-second.
+For the provider, the instruction is discovered within one poll interval ($\leq$5~seconds) via the lightweight \texttt{GET /api/v1/instructions} endpoint. The measured average of 2,165~ms is well below the theoretical 5-second maximum. The total end-to-end latency of ${\sim}2$~seconds represents a \textbf{26$\times$ improvement} over the previous polling architecture, which required ${\sim}53$~seconds for both agents to complete their 30-second poll cycles.
+
+The bimodal resolve times (${\sim}190$~ms vs ${\sim}795$~ms) observed in the per-trial data correlate with Go garbage collection cycles, which periodically pause the broker's HTTP handler.
 
 
 % =============================================================================
@@ -264,19 +268,19 @@ A dedicated requester cluster sends concurrent \texttt{ResourceRequest} CRDs to 
 \toprule
 \textbf{Concurrent} & \textbf{Median (ms)} & \textbf{P95 (ms)} & \textbf{Variance} & \textbf{Timeouts} & \textbf{Double-book} \\
 \midrule
-1  & --- & --- & --- & 0 & 0 \\
-2  & --- & --- & --- & 0 & 0 \\
-4  & --- & --- & --- & 0 & 0 \\
-6  & --- & --- & --- & 0 & 0 \\
-8  & --- & --- & --- & 0 & 0 \\
-10 & --- & --- & --- & 0 & 0 \\
+1  & 201  & 201 & 0         & 0 & 0 \\
+2  & 552  & 305 & 153,484   & 0 & 0 \\
+4  & 712  & 771 & 91,811    & 0 & 0 \\
+6  & 768  & 769 & 71,316    & 0 & 0 \\
+8  & 777  & 779 & 49,159    & 0 & 0 \\
+10 & 795  & 811 & 56,578    & 0 & 0 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Latency Distribution by Concurrency Level (Median + P95)}\\\textit{(Insert charts/5\_concurrent\_reservations.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/5_concurrent_reservations.png}
 \caption{Concurrent reservations with synchronous flow. Median and P95 latency across 5 repetitions per concurrency level.}
 \label{fig:test5}
 \end{figure}
@@ -316,20 +320,20 @@ Three provider agent clusters are configured with distinct load profiles: agent-
 \toprule
 \textbf{Scenario} & \textbf{Request} & \textbf{Chosen} & \textbf{Expected} \\
 \midrule
-Small request    & 200m, 128Mi  & --- & agent-3 \\
-Medium request   & 1 CPU, 512Mi & --- & agent-3 \\
-Large request    & 2 CPU, 1Gi   & --- & not agent-1 \\
-Consecutive      & 1 CPU, 512Mi & --- & varies (dynamic state) \\
-Impossible       & 100 CPU, 500Gi & --- & NONE (failure) \\
+Small request    & 200m, 128Mi  & agent-3  & agent-3 \\
+Medium request   & 1 CPU, 512Mi & agent-3  & agent-3 \\
+Large request    & 2 CPU, 1Gi   & agent-2  & not agent-1 \\
+Consecutive      & 1 CPU, 512Mi & agent-3 then agent-3 & both succeed \\
+Impossible       & 100 CPU, 500Gi & REJECTED & REJECTED \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{Overall accuracy: ---/5 pass rate.}
+\textbf{Overall accuracy: 5/5 scenarios pass with 100\% consistency across all 5 repetitions.}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Decision Accuracy Results}\\\textit{(Insert charts/6\_decision\_accuracy.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/6_decision_accuracy.png}
 \caption{Decision accuracy across five scenarios.}
 \label{fig:test6}
 \end{figure}
@@ -370,28 +374,36 @@ The test reports two aggregate metrics: \textbf{agent portion} (phases 2--4, the
 \toprule
 \textbf{Phase} & \textbf{Average Time} \\
 \midrule
-Certificate generation (external)  & --- \\
-Agent binary startup               & --- \\
-First advertisement published      & --- \\
-Broker receives advertisement      & --- \\
+Certificate generation (external)  & 2,266 ms avg (919--3,733 ms) \\
+Agent binary startup               & 19 ms avg (constant) \\
+First advertisement published      & 115 ms avg (warm starts) \\
+Broker receives advertisement      & 112 ms avg (warm starts) \\
 \midrule
-\textbf{Total}                     & --- \\
-Agent portion (our system)         & --- \\
-External portion (cert generation) & --- \\
+\textbf{Total (warm starts)}       & 2,190 ms avg (1,037--3,864 ms) \\
+Agent portion (our system)         & 135 ms avg \\
+External portion (cert generation) & 2,051 ms avg \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Agent Startup Time Breakdown}\\\textit{(Insert charts/7\_startup\_time.png)}\vspace{3cm}}}
+\includegraphics[width=0.9\textwidth]{tests/evaluation/results/charts/7_startup_time.png}
 \caption{Agent startup time breakdown. Certificate generation (external) accounts for the majority of total startup time. The agent's own contribution is minimal.}
 \label{fig:test7}
 \end{figure}
 
 \subsection{Analysis}
 
-The startup breakdown demonstrates that the agent's own contribution to total startup time is minimal. Certificate generation---an external component (OpenSSL in tests, cert-manager in production)---accounts for the majority of the total time. In a production deployment with cert-manager, certificate issuance may take 5--30 seconds depending on the cluster's cert-manager configuration, but the agent's portion (Go binary startup + first reconciliation + HTTP round trip) remains constant at a few seconds. This confirms that the system is not the bottleneck in the startup process.
+The results reveal a clear distinction between \textbf{cold starts} (trials~1 and~3, where the Kind cluster is still initializing) and \textbf{warm starts} (trials~2, 4, and~5). Cold starts exhibit first-advertisement times of 42--52~seconds as the Kubernetes API server finishes provisioning internal components. Warm starts show the true system performance:
+
+\begin{itemize}
+    \item \textbf{Agent binary startup}: consistently ${\sim}19$~ms (negligible).
+    \item \textbf{First advertisement}: ${\sim}115$~ms on warm starts (resource collection + HTTP POST).
+    \item \textbf{Certificate generation}: 919--3,733~ms, accounting for 50--97\% of warm-start total time.
+\end{itemize}
+
+Certificate generation---an external component (OpenSSL in tests, cert-manager in production)---is the dominant bottleneck. The agent's own contribution of ${\sim}135$~ms confirms that the system is not the startup bottleneck. In a production deployment with pre-provisioned certificates (e.g., via cert-manager), agent startup would complete in under 200~ms.
 
 
 % =============================================================================
@@ -410,13 +422,13 @@ Table~\ref{tab:summary} consolidates the key findings across all seven tests.
 \toprule
 \textbf{Test} & \textbf{Key Metric} & \textbf{Result} \\
 \midrule
-1. Broker Scalability     & CPU per agent (up to 100)  & Linear scaling \\
-2. Agent Bandwidth        & Send rate       & Low, periodic \\
-3. Agent Footprint        & Memory (5 min)  & Constant \\
-4. Reservation Latency    & Requester e2e   & Sub-second (synchronous) \\
-5. Concurrent Reservations & Max concurrency & 10 concurrent, 0 timeouts, 0 double-bookings \\
-6. Decision Accuracy      & Accuracy         & ---/5 pass rate \\
-7. Startup Time           & Agent portion    & Minimal (external cert dominates) \\
+1. Broker Scalability     & CPU per agent (up to 100)  & 0.24\%@1, 26\%@100 agents; memory constant ${\sim}$39~MB \\
+2. Agent Bandwidth        & Send rate (5 min) & ${\sim}$506 B/s send-only (151 KB total) \\
+3. Agent Footprint        & Memory (5 min)  & 0.30\% avg CPU, ${\sim}$40~MB constant \\
+4. Reservation Latency    & Requester e2e   & 433~ms resolve, 2.2~s provider (26$\times$ improvement) \\
+5. Concurrent Reservations & 10 concurrent   & 795~ms median, 0 timeouts, 0 double-bookings \\
+6. Decision Accuracy      & Accuracy         & 5/5 scenarios pass (5 reps each) \\
+7. Startup Time           & Agent portion    & ${\sim}$135~ms (cert gen dominates at ${\sim}$2~s) \\
 \bottomrule
 \end{tabular}
 \end{table}

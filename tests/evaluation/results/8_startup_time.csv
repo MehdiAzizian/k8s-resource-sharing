@@ -1,0 +1,6 @@
+trial,cert_gen_ms,agent_startup_ms,first_adv_ms,broker_receive_ms,total_ms,agent_portion_ms,external_portion_ms
+1,3044,17,42324,42321,45389,42341,3044
+2,919,19,94,91,1037,113,919
+3,2132,19,52488,52486,54641,52507,2132
+4,1500,19,146,143,1668,165,1500
+5,3733,21,106,101,3864,127,3733
