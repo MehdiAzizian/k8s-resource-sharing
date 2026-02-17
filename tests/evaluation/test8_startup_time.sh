@@ -141,9 +141,9 @@ for t in $(seq 1 "$TRIALS"); do
 done
 
 # Summary
-avg_total=$(awk -F, 'NR>1 && $6!="N/A" {s+=$6; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
-avg_agent=$(awk -F, 'NR>1 && $7!="N/A" {s+=$7; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
-avg_external=$(awk -F, 'NR>1 && $8!="N/A" {s+=$8; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
+avg_total=$(awk -F, 'NR>1 && $6!="N/A" {s+=$6; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
+avg_agent=$(awk -F, 'NR>1 && $7!="N/A" {s+=$7; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
+avg_external=$(awk -F, 'NR>1 && $8!="N/A" {s+=$8; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
 
 log_info "Summary:"
 log_info "  avg_total=${avg_total}ms"

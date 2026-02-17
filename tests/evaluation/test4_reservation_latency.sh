@@ -123,10 +123,10 @@ for t in $(seq 1 "$TRIALS"); do
 done
 
 # Summary
-avg_resolve=$(awk -F, 'NR>1 && $3!="N/A" {s+=$3; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
-avg_requester=$(awk -F, 'NR>1 && $4!="N/A" {s+=$4; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
-avg_provider=$(awk -F, 'NR>1 && $5!="N/A" {s+=$5; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
-avg_e2e=$(awk -F, 'NR>1 && $6!="N/A" {s+=$6; n++} END {printf "%.0f", n>0?s/n:0}' "$OUTPUT")
+avg_resolve=$(awk -F, 'NR>1 && $3!="N/A" {s+=$3; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
+avg_requester=$(awk -F, 'NR>1 && $4!="N/A" {s+=$4; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
+avg_provider=$(awk -F, 'NR>1 && $5!="N/A" {s+=$5; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
+avg_e2e=$(awk -F, 'NR>1 && $6!="N/A" {s+=$6; n++} END {if(n>0) printf "%.0f", s/n; else print 0}' "$OUTPUT")
 
 log_info "Summary:"
 log_info "  avg_resolve=${avg_resolve}ms (broker decision time)"
