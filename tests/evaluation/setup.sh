@@ -50,11 +50,12 @@ log_info "Agent binary: $AGENT_DIR/bin/agent"
 # Generate certificates
 generate_ca
 generate_broker_cert
-log_info "Generating agent certificates (1-20)..."
-for i in $(seq 1 20); do
+log_info "Generating agent certificates (1-100)..."
+for i in $(seq 1 100); do
     generate_agent_cert "agent-$i"
 done
-log_info "All certificates generated"
+generate_agent_cert "requester"
+log_info "All certificates generated (100 agents + requester)"
 
 # Create broker cluster (agent clusters are created per-test)
 create_cluster "$BROKER_CLUSTER"

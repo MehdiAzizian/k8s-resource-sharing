@@ -58,6 +58,7 @@ func NewServer(port string, certPath string, handler *handlers.Handler) (*Server
 	mux.HandleFunc("POST /api/v1/advertisements", handler.PostAdvertisement)
 	mux.HandleFunc("GET /api/v1/advertisements/{clusterID}", handler.GetAdvertisement)
 	mux.HandleFunc("POST /api/v1/reservations", handler.PostReservation)
+	mux.HandleFunc("GET /api/v1/instructions", handler.GetInstructions)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))

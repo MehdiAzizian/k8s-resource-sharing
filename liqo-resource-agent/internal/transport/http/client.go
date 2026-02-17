@@ -190,6 +190,35 @@ func (c *HTTPCommunicator) RequestReservation(ctx context.Context, reqDTO *dto.R
 	return &reservation, nil
 }
 
+// FetchInstructions polls the broker for pending provider instructions.
+// This is a lightweight GET request that returns near-instantly.
+func (c *HTTPCommunicator) FetchInstructions(ctx context.Context) ([]*dto.ReservationDTO, error) {
+	url := fmt.Sprintf("%s/api/v1/instructions", c.baseURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch instructions: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("broker returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var instructions []*dto.ReservationDTO
+	if err := json.NewDecoder(resp.Body).Decode(&instructions); err != nil {
+		return nil, fmt.Errorf("failed to decode instructions: %w", err)
+	}
+
+	return instructions, nil
+}
+
 // Ping checks connectivity to broker
 func (c *HTTPCommunicator) Ping(ctx context.Context) error {
 	url := fmt.Sprintf("%s/healthz", c.baseURL)

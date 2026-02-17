@@ -170,6 +170,49 @@ func (h *Handler) GetAdvertisement(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetInstructions handles GET /api/v1/instructions
+// Returns pending provider instructions for the calling cluster.
+// Agents poll this endpoint every few seconds for near-instant instruction delivery,
+// instead of waiting for the next advertisement cycle (30s).
+func (h *Handler) GetInstructions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := log.FromContext(ctx).WithName("instructions-handler")
+
+	// Get cluster ID from mTLS certificate
+	clusterID, ok := middleware.GetClusterID(ctx)
+	if !ok || clusterID == "" {
+		respondWithError(w, http.StatusForbidden, "Could not determine cluster ID from certificate")
+		return
+	}
+
+	// Find all Reserved-phase reservations where this cluster is the provider
+	reservationList := &brokerv1alpha1.ReservationList{}
+	if err := h.k8sClient.List(ctx, reservationList); err != nil {
+		logger.Error(err, "Failed to list reservations")
+		respondWithError(w, http.StatusInternalServerError, "Failed to list reservations")
+		return
+	}
+
+	var instructions []*dto.ReservationDTO
+	for i := range reservationList.Items {
+		rsv := &reservationList.Items[i]
+		if rsv.Status.Phase == brokerv1alpha1.ReservationPhaseReserved &&
+			rsv.Spec.TargetClusterID == clusterID {
+			instructions = append(instructions, dto.FromReservation(rsv))
+		}
+	}
+
+	logger.V(1).Info("Returning provider instructions",
+		"clusterID", clusterID,
+		"count", len(instructions))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(instructions); err != nil {
+		logger.Error(err, "Failed to encode response")
+	}
+}
+
 // respondWithError sends a JSON error response
 func respondWithError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")

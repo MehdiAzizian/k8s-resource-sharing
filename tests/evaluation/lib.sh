@@ -475,3 +475,95 @@ wait_for_reservation_instruction() {
     done
     return 1
 }
+
+# ============================================================
+# RESOURCE REQUEST HELPERS (new synchronous flow)
+# ============================================================
+
+# Create a ResourceRequest on an agent cluster (triggers synchronous reservation)
+create_resource_request() {
+    local name=$1 cluster_name=$2 cpu=$3 memory=$4
+    local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
+
+    kubectl --kubeconfig "$kubeconfig" --request-timeout=15s apply -f - <<EOF
+apiVersion: rear.fluidos.eu/v1alpha1
+kind: ResourceRequest
+metadata:
+  name: $name
+  namespace: default
+spec:
+  requestedCPU: "$cpu"
+  requestedMemory: "$memory"
+EOF
+}
+
+# Wait for a ResourceRequest to reach a specific phase on the agent cluster
+wait_for_resource_request_phase() {
+    local name=$1 cluster_name=$2 phase=$3 timeout=${4:-60}
+    local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
+
+    for _ in $(seq 1 "$timeout"); do
+        local current
+        current=$(kubectl --kubeconfig "$kubeconfig" --request-timeout=10s \
+            get resourcerequest "$name" -n default \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)
+        if [[ "$current" == "$phase" ]]; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+
+# Get the target cluster from a ResourceRequest on the agent cluster
+get_resource_request_target() {
+    local name=$1 cluster_name=$2
+    local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
+    kubectl --kubeconfig "$kubeconfig" --request-timeout=10s \
+        get resourcerequest "$name" -n default \
+        -o jsonpath='{.status.targetClusterID}' 2>/dev/null
+}
+
+# Delete a ResourceRequest on an agent cluster
+delete_resource_request() {
+    local name=$1 cluster_name=$2
+    kubectl --kubeconfig "$KUBECONFIGS_DIR/${cluster_name}.kubeconfig" \
+        --request-timeout=30s --wait=false \
+        delete resourcerequest "$name" -n default --ignore-not-found 2>/dev/null
+}
+
+# Delete all ResourceRequests on an agent cluster
+delete_all_resource_requests() {
+    local cluster_name=$1
+    kubectl --kubeconfig "$KUBECONFIGS_DIR/${cluster_name}.kubeconfig" \
+        --request-timeout=60s --wait=false \
+        delete resourcerequests --all -n default --ignore-not-found 2>/dev/null
+}
+
+# Clean agent instructions (provider + reservation)
+clean_agent_instructions() {
+    local cluster_name=$1
+    local kubeconfig="$KUBECONFIGS_DIR/${cluster_name}.kubeconfig"
+    kubectl --kubeconfig "$kubeconfig" delete providerinstructions --all -n default --ignore-not-found 2>/dev/null
+    kubectl --kubeconfig "$kubeconfig" delete reservationinstructions --all -n default --ignore-not-found 2>/dev/null
+    kubectl --kubeconfig "$kubeconfig" delete resourcerequests --all -n default --ignore-not-found 2>/dev/null
+}
+
+# ============================================================
+# STATISTICS HELPERS
+# ============================================================
+
+# Compute median from a list of values (one per line on stdin)
+compute_median() {
+    sort -n | awk '{a[NR]=$1} END {if(NR%2==1) print a[(NR+1)/2]; else print (a[NR/2]+a[NR/2+1])/2}'
+}
+
+# Compute variance from a list of values (one per line on stdin)
+compute_variance() {
+    awk '{sum+=$1; sumsq+=$1*$1; n++} END {if(n>1) printf "%.2f", (sumsq - sum*sum/n)/(n-1); else print 0}'
+}
+
+# Compute P95 from a list of values (one per line on stdin)
+compute_p95() {
+    sort -n | awk '{a[NR]=$1} END {idx=int(NR*0.95); if(idx<1) idx=1; print a[idx]}'
+}

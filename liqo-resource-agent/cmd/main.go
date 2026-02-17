@@ -84,6 +84,7 @@ func main() {
 	var instructionNamespace string
 	var brokerNamespace string
 	var advertisementRequeueInterval time.Duration
+	var instructionPollInterval time.Duration
 	var kubeconfigsDir string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -113,6 +114,7 @@ func main() {
 	flag.StringVar(&instructionNamespace, "instruction-namespace", "", "Namespace for ReservationInstruction objects (defaults to advertisement namespace)")
 	flag.StringVar(&brokerNamespace, "broker-namespace", "default", "Namespace containing broker CRDs")
 	flag.DurationVar(&advertisementRequeueInterval, "advertisement-requeue-interval", 30*time.Second, "Interval for periodic advertisement updates")
+	flag.DurationVar(&instructionPollInterval, "instruction-poll-interval", 5*time.Second, "Interval for polling broker for provider instructions (0 to disable)")
 	flag.StringVar(&kubeconfigsDir, "kubeconfigs-dir", "", "Directory containing kubeconfig files for Liqo peering (enables automatic peering)")
 
 	opts := zap.Options{
@@ -360,6 +362,22 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ResourceRequest")
 		os.Exit(1)
+	}
+
+	// Start instruction poller for near-instant provider instruction delivery (HTTP transport)
+	if brokerCommunicator != nil && instructionPollInterval > 0 {
+		poller := &controller.InstructionPoller{
+			Client:               mgr.GetClient(),
+			BrokerCommunicator:   brokerCommunicator,
+			PollInterval:         instructionPollInterval,
+			InstructionNamespace: instructionNamespace,
+		}
+		go func() {
+			if err := poller.Start(context.Background()); err != nil {
+				setupLog.Error(err, "Instruction poller failed")
+			}
+		}()
+		setupLog.Info("Instruction poller started", "interval", instructionPollInterval)
 	}
 
 	// Start Reservation Watcher if broker client is available (Kubernetes transport)
