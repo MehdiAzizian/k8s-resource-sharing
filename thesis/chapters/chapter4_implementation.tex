@@ -78,13 +78,16 @@ liqo-resource-agent/
 ├── api/v1alpha1/              # CRD type definitions
 │   ├── advertisement_types.go
 │   ├── reservationinstruction_types.go
-│   └── providerinstruction_types.go
+│   ├── providerinstruction_types.go
+│   └── resourcerequest_types.go    # User-facing reservation trigger
 ├── cmd/main.go                # Entry point, flag parsing, controller setup
 ├── internal/
 │   ├── controller/
 │   │   ├── advertisement_controller.go       # Reconciles local Advertisement
+│   │   ├── resourcerequest_controller.go     # Synchronous reservation flow
 │   │   ├── reservationinstruction_controller.go  # Handles instructions + Liqo
-│   │   └── providerinstruction_controller.go # Handles provider instructions
+│   │   ├── providerinstruction_controller.go # Handles provider instructions
+│   │   └── instruction_poller.go   # Polls GET /instructions every 5s
 │   ├── metrics/
 │   │   └── collector.go       # Node/pod resource collection
 │   ├── publisher/
@@ -92,8 +95,7 @@ liqo-resource-agent/
 │   └── transport/
 │       ├── interface.go       # BrokerCommunicator interface
 │       └── http/
-│           ├── client.go      # mTLS HTTP client with retry logic
-│           └── poller.go      # Periodic reservation polling
+│           └── client.go      # mTLS HTTP client with retry logic
 └── config/
     └── crd/                   # Generated CRD YAML manifests
 \end{verbatim}
@@ -161,6 +163,24 @@ The \texttt{PostAdvertisement} handler receives a JSON-encoded advertisement fro
 This ensures that the broker's resource locking decisions are not lost when an agent publishes a routine advertisement update. Without this preservation, a race condition would occur: the broker locks resources (sets \texttt{Reserved}), and then the agent's next publish cycle overwrites \texttt{Reserved} with zero, effectively unlocking resources prematurely.
 
 The advertisement name in the broker follows the convention \texttt{<clusterID>-adv} (e.g., \texttt{agent-cluster-1-adv}).
+
+% -----------------------------------------------------------------------------
+\subsection{Reservation Handler}
+\label{subsec:reservation-handler}
+
+The \texttt{PostReservation} handler processes synchronous reservation requests from agents. When an agent sends a \texttt{POST /api/v1/reservations} with the requested CPU, memory, and priority, the handler:
+
+\begin{enumerate}
+    \item Validates the request and extracts the requester's cluster ID from the mTLS certificate CN.
+    \item Creates a \texttt{Reservation} CRD in the broker cluster with phase \textit{Pending}.
+    \item Invokes the decision engine's \texttt{SelectBestCluster} method to find the optimal provider.
+    \item If a provider is found, locks resources using \texttt{RetryOnConflict} and transitions the reservation to \textit{Reserved}.
+    \item Returns the reservation result (including the selected provider and reservation name) in the HTTP response.
+\end{enumerate}
+
+This inline processing ensures that the requester receives its instruction in a single HTTP round trip, eliminating the need for a separate polling mechanism on the requester side.
+
+The \texttt{GetInstructions} handler serves the \texttt{GET /api/v1/instructions} endpoint. It lists all \textit{Reserved}-phase reservations where the calling cluster (identified by mTLS certificate CN) is the target provider, and returns them as a JSON array.
 
 % -----------------------------------------------------------------------------
 \subsection{Reservation Controller}
@@ -256,14 +276,16 @@ The \texttt{HTTPCommunicator} implements the \texttt{BrokerCommunicator} interfa
 type BrokerCommunicator interface {
     PublishAdvertisement(ctx context.Context,
         adv *dto.AdvertisementDTO) error
-    FetchReservations(ctx context.Context,
-        clusterID string, role dto.Role) ([]*dto.ReservationDTO, error)
+    RequestReservation(ctx context.Context,
+        req *dto.ReservationRequestDTO) (*dto.ReservationDTO, error)
+    FetchInstructions(ctx context.Context) (
+        []*dto.ReservationDTO, error)
     Ping(ctx context.Context) error
     Close() error
 }
 \end{lstlisting}
 
-This interface enables adding new transport protocols (MQTT, gRPC) without modifying the controllers.
+The \texttt{RequestReservation} method sends a synchronous \texttt{POST /api/v1/reservations} and returns the broker's decision in the response. The \texttt{FetchInstructions} method performs a lightweight \texttt{GET /api/v1/instructions} to discover provider instructions. This interface enables adding new transport protocols (MQTT, gRPC) without modifying the controllers.
 
 \subsubsection{mTLS Client Configuration}
 
@@ -291,17 +313,28 @@ The \texttt{doWithRetry} method implements retry logic for transient failures:
 \end{itemize}
 
 % -----------------------------------------------------------------------------
-\subsection{Reservation Polling}
-\label{subsec:reservation-polling}
+\subsection{Synchronous Reservation Flow}
+\label{subsec:sync-reservation}
 
-The \texttt{ReservationPoller} runs as a background goroutine that periodically queries the broker for reservations involving this cluster. It polls with two separate queries:
+The \texttt{ResourceRequestReconciler} watches for \texttt{ResourceRequest} CRDs created by users. When a new request appears, the controller:
 
 \begin{enumerate}
-    \item \texttt{GET /api/v1/reservations?clusterID=<id>\&role=requester} --- checks if this cluster has been assigned resources from another provider.
-    \item \texttt{GET /api/v1/reservations?clusterID=<id>\&role=provider} --- checks if this cluster has been selected to provide resources.
+    \item Calls \texttt{RequestReservation} on the \texttt{BrokerCommunicator}, which sends a synchronous \texttt{POST /api/v1/reservations} to the broker.
+    \item The broker processes the request inline: running the decision engine, locking resources via \texttt{RetryOnConflict}, and creating the \texttt{Reservation} CRD.
+    \item The broker returns the reservation result (including the selected provider and reservation name) in the HTTP response.
+    \item If the reservation succeeded, the controller creates a local \texttt{ReservationInstruction} CRD and updates the \texttt{ResourceRequest} status to \textit{Reserved} with the target cluster ID.
+    \item If the reservation failed (no suitable provider), the status is set to \textit{Failed} with a descriptive message.
 \end{enumerate}
 
-For each returned reservation, the poller creates the corresponding local CRD (\texttt{ReservationInstruction} for the requester role, \texttt{ProviderInstruction} for the provider role) if it does not already exist. The default polling interval is 30 seconds.
+This synchronous design eliminates polling latency for the requester: the instruction is available immediately after the HTTP round trip, typically under 1 second.
+
+% -----------------------------------------------------------------------------
+\subsection{Instruction Polling}
+\label{subsec:instruction-polling}
+
+The \texttt{InstructionPoller} runs as a background goroutine that discovers provider instructions for this cluster. It queries \texttt{GET /api/v1/instructions} every 5 seconds (configurable via \texttt{--instruction-poll-interval}). The broker returns all \textit{Reserved}-phase reservations where this cluster is the target provider.
+
+For each returned reservation, the poller creates a local \texttt{ProviderInstruction} CRD if one does not already exist. This lightweight polling mechanism ensures that provider clusters discover new instructions within at most 5 seconds of the broker's decision.
 
 % -----------------------------------------------------------------------------
 \subsection{Instruction Controllers}

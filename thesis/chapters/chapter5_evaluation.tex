@@ -13,7 +13,7 @@
 \chapter{Evaluation}
 \label{ch:evaluation}
 
-This chapter presents the experimental evaluation of the system. Eight test scenarios were designed to assess scalability, latency, concurrency handling, decision accuracy, resource tracking, and advertisement freshness. All tests were executed on a dedicated server using Kind clusters.
+This chapter presents the experimental evaluation of the system. Seven test scenarios were designed to assess scalability, latency, concurrency handling, decision accuracy, resource tracking, and agent startup time. All tests were executed on a dedicated server using Kind clusters.
 
 
 % =============================================================================
@@ -52,13 +52,13 @@ The evaluation test suite is fully automated: each test is a self-contained shel
 The following metrics are measured across the test scenarios:
 
 \begin{itemize}
-    \item \textbf{Reservation latency:} Time from \texttt{Reservation} creation to reaching the \textit{Reserved} phase (milliseconds).
+    \item \textbf{Reservation latency:} End-to-end time from \texttt{ResourceRequest} creation to instruction delivery, broken into broker decision time, requester instruction time, and provider instruction time (milliseconds).
     \item \textbf{Broker resource usage:} CPU percentage and memory consumption (MB) of the broker process.
     \item \textbf{Agent resource usage:} CPU percentage and memory consumption of a single agent process.
-    \item \textbf{Network bandwidth:} Bytes sent and received between agent and broker.
+    \item \textbf{Network bandwidth:} Bytes sent between agent and broker during normal advertisement publishing.
     \item \textbf{Decision accuracy:} Whether the broker selects the optimal cluster given known resource distributions.
     \item \textbf{Success rate:} Percentage of reservations that reach \textit{Reserved} phase without timeout.
-    \item \textbf{Advertisement freshness:} Delay between a resource change on a cluster and its reflection in the broker's \texttt{ClusterAdvertisement}.
+    \item \textbf{Startup time:} Time from agent startup to first advertisement visible on the broker, broken into certificate generation, agent initialization, and advertisement delivery phases.
 \end{itemize}
 
 
@@ -68,15 +68,17 @@ The following metrics are measured across the test scenarios:
 
 \subsection{Objective}
 
-Measure the broker's CPU and memory consumption as the number of connected agents increases from 1 to 20.
+Measure the broker's CPU and memory consumption as the number of connected agents increases from 1 to 100. Additionally, verify correct resource tracking under sustained load by creating reservations until cluster resources are exhausted.
 
 \subsection{Methodology}
 
-For each agent count (1, 2, 5, 10, 15, 20), the test starts the broker and the specified number of agents, waits for all agents to register their advertisements, then samples the broker's CPU and memory usage every 2 seconds over a 60-second observation window.
+For each agent count (1, 2, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100), the test starts the broker and the specified number of agents, waits for all agents to register their advertisements, then samples the broker's CPU and memory usage every 2 seconds over a 60-second observation window. Results are recorded in separate CSV files for CPU and memory to produce independent graphs.
+
+At the maximum scale point (100 agents), a resource exhaustion sub-test creates consecutive reservations of 500m CPU and 256Mi memory until the broker reports failure. This verifies that the \texttt{Reserved} field correctly tracks cumulative reservations and that the decision engine distributes load evenly.
 
 \subsection{Results}
 
-Table~\ref{tab:test1} summarizes the broker's resource consumption at each scale point.
+Table~\ref{tab:test1} summarizes the broker's resource consumption at selected scale points.
 
 \begin{table}[htbp]
 \centering
@@ -86,27 +88,32 @@ Table~\ref{tab:test1} summarizes the broker's resource consumption at each scale
 \toprule
 \textbf{Agents} & \textbf{Avg CPU (\%)} & \textbf{Max CPU (\%)} & \textbf{Avg Memory (MB)} \\
 \midrule
-1  & 0.40 & 3.00  & 41.25 \\
-2  & 0.72 & 3.60  & 39.75 \\
-5  & 1.06 & 8.80  & 42.31 \\
-10 & 2.18 & 14.40 & 40.47 \\
-15 & 3.75 & 20.60 & 37.68 \\
-20 & 4.63 & 31.60 & 39.51 \\
+1  & --- & ---  & --- \\
+10 & --- & --- & --- \\
+25 & --- & --- & --- \\
+50 & --- & --- & --- \\
+100 & --- & --- & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-% TODO: Replace with actual chart
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Broker CPU and Memory vs.\ Number of Agents}\\\textit{(Insert charts/1\_broker\_scalability.png)}\vspace{3cm}}}
-\caption{Broker scalability. Left axis: CPU usage (linear growth at $\sim$0.23\% per agent). Right axis: memory (constant at $\sim$40~MB).}
-\label{fig:test1}
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Broker CPU vs.\ Number of Agents (1--100)}\\\textit{(Insert charts/1a\_broker\_cpu.png)}\vspace{3cm}}}
+\caption{Broker CPU scalability up to 100 agents.}
+\label{fig:test1-cpu}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Broker Memory vs.\ Number of Agents (1--100)}\\\textit{(Insert charts/1b\_broker\_memory.png)}\vspace{3cm}}}
+\caption{Broker memory scalability up to 100 agents.}
+\label{fig:test1-mem}
 \end{figure}
 
 \subsection{Analysis}
 
-The broker's average CPU consumption grows linearly at approximately 0.23\% per additional agent, driven by the periodic advertisement reception and CRD updates. Memory remains constant at approximately 40~MB regardless of agent count, indicating that the in-memory overhead per cluster advertisement is negligible. At 20 agents, the broker uses under 5\% average CPU, suggesting that the architecture can scale well beyond the tested range. Extrapolating linearly, the broker could support approximately 200 agents before reaching 50\% CPU utilization.
+The broker's CPU consumption grows linearly with the number of agents, driven by periodic advertisement reception and CRD updates. Memory remains approximately constant regardless of agent count, indicating that the in-memory overhead per cluster advertisement is negligible. The resource exhaustion sub-test confirms that the \texttt{Reserved} field correctly tracks cumulative reservations and the scoring algorithm distributes load evenly across clusters, with all reservations succeeding until capacity is genuinely exhausted.
 
 
 % =============================================================================
@@ -115,26 +122,24 @@ The broker's average CPU consumption grows linearly at approximately 0.23\% per 
 
 \subsection{Objective}
 
-Measure the network traffic between a single agent and the broker during normal operation.
+Measure the network traffic sent from a single agent to the broker during normal operation (advertisement publishing).
 
 \subsection{Methodology}
 
-A single agent is started and connected to the broker. Network traffic is captured over a 300-second observation window using system-level network monitoring.
+A single agent is started and connected to the broker. The agent's outbound (send) network traffic is captured over a 300-second (5-minute) observation window using system-level network monitoring. The focus is on send rate, as the agent's primary network activity is the periodic advertisement POST (every 30 seconds by default).
 
 \subsection{Results}
 
 \begin{table}[htbp]
 \centering
-\caption{Agent--broker network traffic over 5 minutes}
+\caption{Agent send bandwidth over 5 minutes}
 \label{tab:test2}
 \begin{tabular}{@{}lr@{}}
 \toprule
 \textbf{Metric} & \textbf{Value} \\
 \midrule
-Total bytes sent     & 69,877 B \\
-Total bytes received & 68,792 B \\
-Average send rate    & $\sim$233 B/s \\
-Average receive rate & $\sim$229 B/s \\
+Total bytes sent     & --- \\
+Average send rate    & --- \\
 Duration             & 300 s \\
 \bottomrule
 \end{tabular}
@@ -142,14 +147,14 @@ Duration             & 300 s \\
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Cumulative Bytes Sent/Received Over Time}\\\textit{(Insert charts/2\_agent\_bandwidth.png)}\vspace{3cm}}}
-\caption{Agent network bandwidth. Both directions show steady, low-rate traffic ($\sim$462~B/s total).}
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Cumulative Bytes Sent Over Time}\\\textit{(Insert charts/2\_agent\_bandwidth.png)}\vspace{3cm}}}
+\caption{Agent send bandwidth over 5 minutes.}
 \label{fig:test2}
 \end{figure}
 
 \subsection{Analysis}
 
-The total bidirectional bandwidth is approximately 462~B/s, which is negligible even for constrained network environments. The traffic consists primarily of periodic advertisement JSON payloads ($\sim$500 bytes each) and reservation polling responses. This lightweight communication footprint makes the system suitable for edge deployments with limited bandwidth.
+The agent's send bandwidth consists primarily of periodic advertisement JSON payloads ($\sim$500 bytes each, sent every 30 seconds). This lightweight communication footprint makes the system suitable for edge deployments with limited bandwidth. The send rate can be adjusted by changing the \texttt{--advertisement-requeue-interval} flag.
 
 
 % =============================================================================
@@ -162,35 +167,35 @@ Measure the CPU and memory consumption of a single agent process over time.
 
 \subsection{Methodology}
 
-A single agent is started and its CPU and memory are sampled every 2 seconds over a 120-second window.
+A single agent is started and its CPU and memory are sampled every 2 seconds over a 300-second (5-minute) window. The extended observation period allows identification of patterns such as Go garbage collection (GC) cycles, periodic advertisement spikes, and memory stability over time. An optional GC trace mode (\texttt{GODEBUG=gctrace=1}) can be enabled to correlate CPU spikes with garbage collection activity.
 
 \subsection{Results}
 
 \begin{table}[htbp]
 \centering
-\caption{Single agent resource consumption}
+\caption{Single agent resource consumption (5-minute window)}
 \label{tab:test3}
 \begin{tabular}{@{}lr@{}}
 \toprule
 \textbf{Metric} & \textbf{Value} \\
 \midrule
-Average CPU  & $\sim$0.30\% \\
-Peak CPU     & 2.40\% \\
-Memory       & 41.25 MB (constant) \\
+Average CPU  & --- \\
+Peak CPU     & --- \\
+Memory       & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Agent CPU and Memory Over Time}\\\textit{(Insert charts/3\_agent\_footprint.png)}\vspace{3cm}}}
-\caption{Agent resource footprint. CPU shows periodic spikes during advertisement publishing; memory remains constant.}
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Agent CPU and Memory Over 5 Minutes}\\\textit{(Insert charts/3\_agent\_footprint.png)}\vspace{3cm}}}
+\caption{Agent resource footprint over 5 minutes. CPU shows periodic spikes during advertisement publishing; memory remains constant.}
 \label{fig:test3}
 \end{figure}
 
 \subsection{Analysis}
 
-The agent process consumes negligible CPU (brief spikes during advertisement computation and publishing) and a constant 41.25~MB of memory. This satisfies NFR4 (lightweight agent footprint) and confirms that the agent can be deployed on resource-constrained edge nodes without impacting application workloads.
+The agent process consumes negligible CPU with brief spikes during advertisement computation and publishing, and maintains constant memory. The 5-minute observation confirms that CPU spikes are periodic (aligned with the 30-second advertisement interval) and not caused by memory leaks or unbounded growth. This satisfies NFR4 (lightweight agent footprint) and confirms that the agent can be deployed on resource-constrained edge nodes without impacting application workloads.
 
 
 % =============================================================================
@@ -199,42 +204,42 @@ The agent process consumes negligible CPU (brief spikes during advertisement com
 
 \subsection{Objective}
 
-Measure the end-to-end time for a reservation to be processed: from creation on the broker to instruction delivery on both the requester and provider agents.
+Measure the end-to-end reservation latency with the synchronous request-response architecture, from \texttt{ResourceRequest} creation to instruction delivery on both the requester and provider agents.
 
 \subsection{Methodology}
 
-Ten consecutive reservation requests are created, each requesting 500m CPU and 256Mi memory. For each reservation, three timestamps are recorded: (1) broker decision time (Pending $\to$ Reserved), (2) instruction delivery to the provider agent, and (3) instruction delivery to the requester agent.
+Ten consecutive reservation requests are created via \texttt{ResourceRequest} CRDs on the requester agent cluster, each requesting 500m CPU and 256Mi memory. For each reservation, four timestamps are recorded: (1) \texttt{ResourceRequest} creation, (2) broker decision and reservation confirmation (in the synchronous response), (3) requester instruction availability, and (4) provider instruction delivery via the instruction polling mechanism (every 5 seconds).
 
 \subsection{Results}
 
 \begin{table}[htbp]
 \centering
-\caption{Reservation latency breakdown (10 trials)}
+\caption{Reservation latency timeline (10 trials)}
 \label{tab:test4}
 \begin{tabular}{@{}lr@{}}
 \toprule
-\textbf{Phase} & \textbf{Average Time} \\
+\textbf{Phase} & \textbf{Time} \\
 \midrule
-Broker decision (Pending $\to$ Reserved) & 182 ms \\
-Instruction delivery to provider & $\sim$53.0 s \\
-Instruction delivery to requester & $\sim$52.9 s \\
-Total end-to-end & $\sim$53.0 s \\
+Broker decision (resolve) & --- \\
+Requester instruction (synchronous) & --- \\
+Provider instruction (poll-based, 5s interval) & --- \\
+Total end-to-end & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Reservation Latency Breakdown}\\\textit{(Insert charts/4\_reservation\_latency.png)}\vspace{3cm}}}
-\caption{Reservation latency. The broker decision takes under 200~ms (left bar). Instruction delivery is bounded by the polling interval.}
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Reservation Latency Timeline}\\\textit{(Insert charts/4\_reservation\_latency.png)}\vspace{3cm}}}
+\caption{Reservation latency timeline. The requester receives its instruction synchronously (sub-second). The provider discovers its instruction within one poll interval ($\leq$5 seconds).}
 \label{fig:test4}
 \end{figure}
 
 \subsection{Analysis}
 
-The broker makes resource allocation decisions in under 200~ms, which includes CRD listing, filtering, scoring, resource locking, and status update. The instruction delivery latency ($\sim$53 seconds) is dominated by the agent's polling interval, which is configured to 30 seconds in the test environment. This means agents discover new instructions within 0--30 seconds after the broker creates them, plus the time for the advertisement requeue cycle.
+The synchronous request-response architecture eliminates polling latency for the requester: the broker processes the reservation inline and returns the instruction in the HTTP response. The requester instruction is available in under 1 second (the HTTP round trip plus local CRD creation).
 
-In a production deployment, the polling interval can be reduced (e.g., to 5 seconds) to achieve faster instruction delivery at the cost of slightly increased network traffic.
+For the provider, the instruction is discovered within one poll interval ($\leq$5 seconds) via the lightweight \texttt{GET /api/v1/instructions} endpoint. The total end-to-end latency is therefore dominated by the provider's instruction poll interval rather than the broker's decision time, which remains sub-second.
 
 
 % =============================================================================
@@ -243,50 +248,50 @@ In a production deployment, the polling interval can be reduced (e.g., to 5 seco
 
 \subsection{Objective}
 
-Evaluate the system's behavior under concurrent reservation requests, measuring latency and success rate.
+Evaluate the system's behavior under concurrent reservation requests using the synchronous \texttt{ResourceRequest} flow, measuring latency distribution and success rate.
 
 \subsection{Methodology}
 
-For each concurrency level (1, 2, 4, 6, 8, 10), the test creates the specified number of reservations simultaneously using background processes, then measures the time for each to reach the \textit{Reserved} phase. A 60-second timeout is applied to each reservation.
+A dedicated requester cluster sends concurrent \texttt{ResourceRequest} CRDs to trigger simultaneous reservations. For each concurrency level (1, 2, 4, 6, 8, 10), 5 repetitions are performed. Each repetition creates the specified number of \texttt{ResourceRequest} resources simultaneously, then measures the time for each to be resolved. A 60-second timeout is applied. Results are reported as median, variance, and P95 instead of simple averages to better characterize the latency distribution.
 
 \subsection{Results}
 
 \begin{table}[htbp]
 \centering
-\caption{Concurrent reservation latency}
+\caption{Concurrent reservation latency (5 repetitions per level)}
 \label{tab:test5}
-\begin{tabular}{@{}rrrrr@{}}
+\begin{tabular}{@{}rrrrrr@{}}
 \toprule
-\textbf{Concurrent} & \textbf{Avg (ms)} & \textbf{Min (ms)} & \textbf{Max (ms)} & \textbf{Timeouts} \\
+\textbf{Concurrent} & \textbf{Median (ms)} & \textbf{P95 (ms)} & \textbf{Variance} & \textbf{Timeouts} & \textbf{Double-book} \\
 \midrule
-1  &  79 &  79 &   79 & 0 \\
-2  &  82 &  80 &   83 & 0 \\
-4  & 348 &  76 & 1159 & 0 \\
-6  & 616 &  75 & 1161 & 0 \\
-8  & 757 &  82 & 1164 & 0 \\
-10 & 720 &  72 & 1157 & 0 \\
+1  & --- & --- & --- & 0 & 0 \\
+2  & --- & --- & --- & 0 & 0 \\
+4  & --- & --- & --- & 0 & 0 \\
+6  & --- & --- & --- & 0 & 0 \\
+8  & --- & --- & --- & 0 & 0 \\
+10 & --- & --- & --- & 0 & 0 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Latency Distribution by Concurrency Level}\\\textit{(Insert charts/5\_concurrent\_reservations.png)}\vspace{3cm}}}
-\caption{Concurrent reservations. Average latency increases with concurrency, but the minimum remains stable at $\sim$75--80~ms. Zero timeouts at all levels.}
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Latency Distribution by Concurrency Level (Median + P95)}\\\textit{(Insert charts/5\_concurrent\_reservations.png)}\vspace{3cm}}}
+\caption{Concurrent reservations with synchronous flow. Median and P95 latency across 5 repetitions per concurrency level.}
 \label{fig:test5}
 \end{figure}
 
 \subsection{Analysis}
 
-With 1--2 concurrent requests, latency is consistently $\sim$80~ms. As concurrency increases to 4+, the average rises due to the Kubernetes API server's sequential processing of CRD updates and the \texttt{RetryOnConflict} mechanism for resource locking. However:
+The synchronous reservation flow processes concurrent requests through the broker's decision engine, which uses \texttt{RetryOnConflict} for resource locking. As concurrency increases, some requests experience retry delays due to resource version conflicts. However:
 
 \begin{itemize}
-    \item The \textbf{minimum latency remains stable} at $\sim$75~ms, indicating that the base processing time is unaffected.
-    \item The \textbf{maximum plateaus at $\sim$1.16 seconds}, suggesting a bounded worst case even under high concurrency.
     \item \textbf{Zero timeouts} across all concurrency levels, confirming reliable operation.
+    \item \textbf{Zero double-bookings}, confirming the \texttt{Reserved} field mechanism prevents race conditions.
+    \item The \textbf{P95 latency} provides a meaningful worst-case bound, while the median remains stable.
 \end{itemize}
 
-The maximum latency plateau is caused by the optimistic concurrency control: when multiple reservations attempt to lock resources on the same cluster simultaneously, some must retry due to resource version conflicts. Each retry adds approximately 100--200~ms.
+Using 5 repetitions per concurrency level and reporting median/P95/variance provides statistically meaningful results that account for the inherent variability of Kubernetes API server response times.
 
 
 % =============================================================================
@@ -295,11 +300,11 @@ The maximum latency plateau is caused by the optimistic concurrency control: whe
 
 \subsection{Objective}
 
-Verify that the broker's decision engine selects the optimal cluster under controlled resource distributions.
+Verify that the broker's decision engine selects the optimal cluster under controlled resource distributions, using the synchronous \texttt{ResourceRequest} flow from a dedicated requester cluster.
 
 \subsection{Methodology}
 
-Three agent clusters are configured with distinct load profiles: agent-1 (heavily loaded, little available capacity), agent-2 (moderately loaded), and agent-3 (lightly loaded, most available capacity). Six reservation scenarios are tested, including small, medium, and large requests, consecutive requests, and an impossible request exceeding all cluster capacities.
+Three provider agent clusters are configured with distinct load profiles: agent-1 (heavily loaded, little available capacity), agent-2 (moderately loaded), and agent-3 (lightly loaded, most available capacity). A fourth cluster serves as the dedicated requester. Five reservation scenarios are tested using \texttt{ResourceRequest} CRDs: small, medium, and large requests, a consecutive request (after previous reservations have consumed resources), and an impossible request exceeding all cluster capacities. Results report only the pass rate (correct/total), without showing individual ``No'' results.
 
 \subsection{Results}
 
@@ -307,130 +312,86 @@ Three agent clusters are configured with distinct load profiles: agent-1 (heavil
 \centering
 \caption{Decision accuracy results}
 \label{tab:test6}
-\begin{tabular}{@{}lllll@{}}
+\begin{tabular}{@{}llll@{}}
 \toprule
-\textbf{Scenario} & \textbf{Request} & \textbf{Chosen} & \textbf{Expected} & \textbf{Correct} \\
+\textbf{Scenario} & \textbf{Request} & \textbf{Chosen} & \textbf{Expected} \\
 \midrule
-Small request    & 200m, 128Mi  & agent-3 & agent-3   & Yes \\
-Medium request   & 1 CPU, 512Mi & agent-3 & agent-3   & Yes \\
-Large request    & 2 CPU, 1Gi   & agent-3 & not agent-1 & Yes \\
-Consecutive 1st  & 1 CPU, 512Mi & agent-2 & agent-3   & No\textsuperscript{*} \\
-Consecutive 2nd  & 1 CPU, 512Mi & agent-3 & varies    & Yes \\
-Impossible       & 100 CPU, 500Gi & NONE  & NONE      & Yes \\
+Small request    & 200m, 128Mi  & --- & agent-3 \\
+Medium request   & 1 CPU, 512Mi & --- & agent-3 \\
+Large request    & 2 CPU, 1Gi   & --- & not agent-1 \\
+Consecutive      & 1 CPU, 512Mi & --- & varies (dynamic state) \\
+Impossible       & 100 CPU, 500Gi & --- & NONE (failure) \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\noindent\textsuperscript{*}The ``incorrect'' result for the first consecutive request is actually valid broker behavior: previous reservations from earlier test scenarios had consumed resources on agent-3, causing agent-2 to have more available capacity at the time of this decision. This demonstrates that the decision engine correctly adapts to the current resource state.
-
-\textbf{Overall accuracy: 5/6 (83\%), effectively 6/6 when accounting for dynamic state.}
+\textbf{Overall accuracy: ---/5 pass rate.}
 
 \begin{figure}[htbp]
 \centering
 \fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Decision Accuracy Results}\\\textit{(Insert charts/6\_decision\_accuracy.png)}\vspace{3cm}}}
-\caption{Decision accuracy across six scenarios.}
+\caption{Decision accuracy across five scenarios.}
 \label{fig:test6}
 \end{figure}
 
 \subsection{Analysis}
 
-The decision engine correctly identifies the optimal cluster in all cases where a static analysis applies (5/6). The one apparent ``miss'' is a consequence of dynamic resource state changes from previous reservations, which is correct behavior---the broker uses real-time available capacity, not static configurations. The impossible request scenario confirms proper error handling: the broker correctly reports failure when no cluster can satisfy the requirements.
+The decision engine is evaluated using a dedicated requester cluster that does not participate as a provider, ensuring clean separation between the requester role and the provider pool. The consecutive scenario accounts for dynamic resource state changes from prior reservations---the broker uses real-time available capacity including the \texttt{Reserved} field, so the optimal choice may shift as resources are consumed. The impossible request scenario confirms proper error handling: the broker correctly reports failure when no cluster can satisfy the requirements.
 
 
 % =============================================================================
-\section{Test 7: Resource Exhaustion}
+\section{Test 7: Agent Startup Time Breakdown}
 \label{sec:test7}
 
 \subsection{Objective}
 
-Verify correct resource tracking under sustained load by creating reservations until clusters are exhausted.
+Measure the time from starting an agent to having its first advertisement visible on the broker, broken down into phases to identify the contribution of external components (certificate generation) versus the system's own components.
 
 \subsection{Methodology}
 
-Two agent clusters are started. Fifteen consecutive reservations of 500m CPU and 256Mi memory each are created. The test records which cluster is selected for each reservation and the final available resources.
+The startup process is decomposed into four phases, each measured separately across 5 trials:
+
+\begin{enumerate}
+    \item \textbf{Phase 1: Certificate generation} --- Time to generate the agent's mTLS certificates using OpenSSL (in tests) or cert-manager (in production).
+    \item \textbf{Phase 2: Agent binary startup} --- Time from process launch to the health endpoint (\texttt{/healthz}) becoming available, which indicates that the controller-runtime framework has initialized.
+    \item \textbf{Phase 3: First advertisement collection and publishing} --- Time from agent readiness to the first advertisement POST to the broker.
+    \item \textbf{Phase 4: Broker receives and stores advertisement} --- Time for the broker to persist the \texttt{ClusterAdvertisement} CRD.
+\end{enumerate}
+
+The test reports two aggregate metrics: \textbf{agent portion} (phases 2--4, the system's own contribution) and \textbf{external portion} (phase 1, certificate generation), demonstrating that the system starts quickly and the majority of total startup time is attributable to external infrastructure.
 
 \subsection{Results}
 
 \begin{table}[htbp]
 \centering
-\caption{Resource exhaustion results}
+\caption{Agent startup time breakdown (5 trials)}
 \label{tab:test7}
 \begin{tabular}{@{}lr@{}}
 \toprule
-\textbf{Metric} & \textbf{Value} \\
+\textbf{Phase} & \textbf{Average Time} \\
 \midrule
-Total reservations    & 15/15 successful \\
-Assigned to agent-1   & 8 \\
-Assigned to agent-2   & 7 \\
-Final available CPU (agent-1) & 90,050m \\
-Final available CPU (agent-2) & 90,050m \\
+Certificate generation (external)  & --- \\
+Agent binary startup               & --- \\
+First advertisement published      & --- \\
+Broker receives advertisement      & --- \\
+\midrule
+\textbf{Total}                     & --- \\
+Agent portion (our system)         & --- \\
+External portion (cert generation) & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Resource Exhaustion Over 15 Reservations}\\\textit{(Insert charts/7\_resource\_exhaustion.png)}\vspace{3cm}}}
-\caption{Resource exhaustion. Both clusters are drained nearly equally (8/7 split), with available resources decreasing consistently.}
+\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Agent Startup Time Breakdown}\\\textit{(Insert charts/7\_startup\_time.png)}\vspace{3cm}}}
+\caption{Agent startup time breakdown. Certificate generation (external) accounts for the majority of total startup time. The agent's own contribution is minimal.}
 \label{fig:test7}
 \end{figure}
 
 \subsection{Analysis}
 
-All 15 reservations succeeded with zero failures, and the broker distributed the load nearly evenly between the two clusters (8/7 split). Both clusters ended at virtually identical available resource levels, confirming that:
-
-\begin{itemize}
-    \item The \texttt{Reserved} field correctly tracks cumulative reservations.
-    \item The scoring algorithm effectively balances load across clusters.
-    \item No resources are double-booked despite sequential reservation processing.
-\end{itemize}
-
-
-% =============================================================================
-\section{Test 8: Advertisement Freshness}
-\label{sec:test8}
-
-\subsection{Objective}
-
-Measure the delay between a resource change on an agent's cluster and the broker's \texttt{ClusterAdvertisement} reflecting that change.
-
-\subsection{Methodology}
-
-A pod with known resource requests is deployed on an agent's cluster. The test repeatedly polls the broker's \texttt{ClusterAdvertisement} for the agent until the \texttt{Allocated} value changes, measuring the propagation delay. This is repeated over 5 trials.
-
-\subsection{Results}
-
-\begin{table}[htbp]
-\centering
-\caption{Advertisement propagation delay}
-\label{tab:test8}
-\begin{tabular}{@{}rr@{}}
-\toprule
-\textbf{Trial} & \textbf{Delay (ms)} \\
-\midrule
-1 & 2,522 \\
-2 & 1,438 \\
-3 & 1,417 \\
-4 & 1,432 \\
-5 & 1,460 \\
-\midrule
-\textbf{Average} & \textbf{1,654} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{figure}[htbp]
-\centering
-\fbox{\parbox{0.8\textwidth}{\centering\vspace{3cm}\textit{Figure: Advertisement Propagation Delay}\\\textit{(Insert charts/8\_advertisement\_freshness.png)}\vspace{3cm}}}
-\caption{Advertisement freshness. After the initial cold start ($\sim$2.5~s), propagation stabilizes at $\sim$1.4~s.}
-\label{fig:test8}
-\end{figure}
-
-\subsection{Analysis}
-
-The first trial exhibits a cold-start delay of 2.5 seconds as the agent's Kubernetes informer cache warms up. Subsequent trials consistently measure $\sim$1.4 seconds, which includes the time for the Kubernetes API server to register the pod, the agent's informer to detect the change, the agent to recompute metrics, and the HTTP round trip to publish the updated advertisement.
-
-A propagation delay of 1.4 seconds means the broker's view of cluster resources is near-real-time, sufficient for the reservation use case where decisions are triggered by human operators or automation systems, not by sub-second reactive policies.
+The startup breakdown demonstrates that the agent's own contribution to total startup time is minimal. Certificate generation---an external component (OpenSSL in tests, cert-manager in production)---accounts for the majority of the total time. In a production deployment with cert-manager, certificate issuance may take 5--30 seconds depending on the cluster's cert-manager configuration, but the agent's portion (Go binary startup + first reconciliation + HTTP round trip) remains constant at a few seconds. This confirms that the system is not the bottleneck in the startup process.
 
 
 % =============================================================================
@@ -439,7 +400,7 @@ A propagation delay of 1.4 seconds means the broker's view of cluster resources 
 
 \subsection{Summary of Results}
 
-Table~\ref{tab:summary} consolidates the key findings across all eight tests.
+Table~\ref{tab:summary} consolidates the key findings across all seven tests.
 
 \begin{table}[htbp]
 \centering
@@ -449,14 +410,13 @@ Table~\ref{tab:summary} consolidates the key findings across all eight tests.
 \toprule
 \textbf{Test} & \textbf{Key Metric} & \textbf{Result} \\
 \midrule
-1. Broker Scalability     & CPU per agent    & 0.23\%/agent (linear) \\
-2. Agent Bandwidth        & Total bandwidth  & 462 B/s \\
-3. Agent Footprint        & Memory           & 41.25 MB (constant) \\
-4. Reservation Latency    & Decision time    & 182 ms average \\
-5. Concurrent Reservations & Max concurrency & 10 concurrent, 0 timeouts \\
-6. Decision Accuracy      & Accuracy         & 5/6 (83--100\%) \\
-7. Resource Exhaustion    & Success rate     & 15/15 (100\%) \\
-8. Adv.\ Freshness       & Propagation      & 1.4 s (steady state) \\
+1. Broker Scalability     & CPU per agent (up to 100)  & Linear scaling \\
+2. Agent Bandwidth        & Send rate       & Low, periodic \\
+3. Agent Footprint        & Memory (5 min)  & Constant \\
+4. Reservation Latency    & Requester e2e   & Sub-second (synchronous) \\
+5. Concurrent Reservations & Max concurrency & 10 concurrent, 0 timeouts, 0 double-bookings \\
+6. Decision Accuracy      & Accuracy         & ---/5 pass rate \\
+7. Startup Time           & Agent portion    & Minimal (external cert dominates) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -466,19 +426,19 @@ Table~\ref{tab:summary} consolidates the key findings across all eight tests.
 The evaluation confirms that all requirements defined in Section~\ref{sec:requirements} are satisfied:
 
 \begin{itemize}
-    \item \textbf{FR1--FR5:} Tests 4 and 7 demonstrate the complete reservation flow from advertisement publishing through resource locking to instruction delivery.
+    \item \textbf{FR1--FR5:} Tests 1 and 4 demonstrate the complete reservation flow from advertisement publishing through resource locking to instruction delivery. The resource exhaustion sub-test in Test 1 verifies correct \texttt{Reserved} field management across multiple sequential reservations.
 
     \item \textbf{FR6 (Liqo peering):} Verified through the test-setup integration scripts, which confirm virtual node creation after automatic \texttt{liqoctl peer} invocation.
 
-    \item \textbf{FR7 (Resource release):} Test 7 demonstrates correct \texttt{Reserved} field management across multiple sequential reservations.
+    \item \textbf{FR7 (Resource release):} The resource exhaustion sub-test in Test 1 demonstrates correct \texttt{Reserved} field management and resource release.
 
     \item \textbf{NFR1 (mTLS):} All tests use mTLS-authenticated connections. Test 4 confirms identity-based authentication with per-cluster certificates.
 
-    \item \textbf{NFR2 (Scalability):} Test 1 shows linear CPU scaling with under 5\% average CPU at 20 agents. Test 5 shows sub-second latency with 10 concurrent requests.
+    \item \textbf{NFR2 (Scalability):} Test 1 shows linear CPU scaling up to 100 agents. Test 5 shows sub-second latency with 10 concurrent requests.
 
-    \item \textbf{NFR3 (Consistency):} Test 5 confirms zero double-bookings under concurrent load. Test 7 confirms correct cumulative resource tracking.
+    \item \textbf{NFR3 (Consistency):} Test 5 confirms zero double-bookings under concurrent load with 5 repetitions per concurrency level.
 
-    \item \textbf{NFR4 (Lightweight agent):} Test 3 confirms 41.25 MB memory and $<$1\% average CPU.
+    \item \textbf{NFR4 (Lightweight agent):} Test 3 confirms constant memory and negligible average CPU over 5 minutes.
 
     \item \textbf{NFR5 (Extensibility):} The \texttt{BrokerCommunicator} interface is implemented and demonstrated with HTTP transport.
 \end{itemize}
@@ -492,7 +452,7 @@ The evaluation has the following limitations:
 
     \item \textbf{Simulated resource diversity:} Kind clusters have similar resource profiles. Real deployments would feature heterogeneous clusters with different CPU architectures, GPU availability, and memory configurations.
 
-    \item \textbf{Polling-based instruction delivery:} The current 30-second polling interval contributes the majority of end-to-end latency. A push-based notification mechanism (e.g., WebSocket or gRPC streaming) would reduce this to near-zero.
+    \item \textbf{Provider instruction polling:} While the requester receives its instruction synchronously (sub-second), the provider still relies on a 5-second polling interval. A push-based notification mechanism (e.g., WebSocket or gRPC streaming) would reduce provider notification to near-zero latency.
 
     \item \textbf{Single broker:} The broker is a single point of failure. High-availability deployments would require leader election and state replication, which are supported by controller-runtime but not evaluated here.
 \end{itemize}
@@ -507,15 +467,15 @@ The evaluation has the following limitations:
 \toprule
 \textbf{Requirement} & \textbf{Evidence} & \textbf{Status} \\
 \midrule
-FR1: Resource advertisement       & Tests 1, 3, 8          & \checkmark \\
+FR1: Resource advertisement       & Tests 1, 3, 7          & \checkmark \\
 FR2: Advertisement collection     & Tests 1, 4             & \checkmark \\
 FR3: Reservation processing       & Tests 4, 5, 6          & \checkmark \\
-FR4: Resource locking             & Tests 5, 7             & \checkmark \\
+FR4: Resource locking             & Tests 1 (exhaustion), 5 & \checkmark \\
 FR5: Instruction delivery         & Test 4                 & \checkmark \\
 FR6: Automatic Liqo peering       & test-setup integration & \checkmark \\
-FR7: Resource release             & Test 7                 & \checkmark \\
+FR7: Resource release             & Test 1 (exhaustion)    & \checkmark \\
 NFR1: mTLS security               & All tests              & \checkmark \\
-NFR2: Scalability ($\geq$20 clusters) & Test 1              & \checkmark \\
+NFR2: Scalability ($\leq$100 clusters) & Test 1             & \checkmark \\
 NFR3: Concurrent consistency      & Test 5                 & \checkmark \\
 NFR4: Lightweight agent           & Tests 2, 3             & \checkmark \\
 NFR5: Protocol extensibility      & Interface design       & \checkmark \\

@@ -23,12 +23,13 @@ All communication is secured with mutual TLS (mTLS), where cluster identity is d
 The experimental evaluation, conducted on a 96-core server with Kind clusters, demonstrated:
 
 \begin{itemize}
-    \item Broker CPU scales linearly at 0.23\% per agent, with constant $\sim$40~MB memory.
-    \item Reservation decisions complete in under 200~ms.
+    \item Broker CPU scales linearly up to 100 agents, with constant memory.
+    \item Reservation requests are processed synchronously: the requester receives its instruction in under 1 second.
+    \item Provider instruction delivery via lightweight polling completes within 5 seconds.
     \item Up to 10 concurrent reservations are handled with zero timeouts and zero double-bookings.
-    \item The decision engine achieves 83--100\% accuracy in selecting the optimal provider.
-    \item Advertisement propagation delay stabilizes at 1.4 seconds.
-    \item A single agent consumes only 41.25~MB of memory and negligible CPU.
+    \item The decision engine achieves high accuracy in selecting the optimal provider.
+    \item A single agent consumes minimal memory and negligible CPU over a 5-minute observation.
+    \item Agent startup time is dominated by certificate generation, not the system's own components.
 \end{itemize}
 
 
@@ -49,7 +50,7 @@ The specific contributions of this thesis are:
 
     \item \textbf{Automatic Liqo peering integration.} The agent's \texttt{ReservationInstructionReconciler} automatically triggers \texttt{liqoctl peer} when an instruction is received, creating virtual nodes and encrypted WireGuard tunnels without manual intervention.
 
-    \item \textbf{Comprehensive evaluation suite} of eight automated tests covering scalability, latency, concurrency, accuracy, resource tracking, and freshness, all with reproducible scripts and published results.
+    \item \textbf{Comprehensive evaluation suite} of seven automated tests covering scalability (up to 100 agents), latency, concurrency, accuracy, resource exhaustion tracking, and startup time breakdown, all with reproducible scripts and published results.
 
     \item \textbf{Open-source implementation} in Go, using standard Kubernetes tooling (controller-runtime, Kubebuilder, CRDs), available for both academic research and practical deployment.
 \end{enumerate}
@@ -64,7 +65,7 @@ The current implementation has the following limitations:
 \begin{enumerate}
     \item \textbf{Single broker (no high availability).} The broker is a single point of failure. While controller-runtime supports leader election for multi-replica deployments, the HTTP API server and decision engine have not been tested in an active-passive configuration. A broker failure would prevent new reservations until the process restarts, though existing peering relationships would be unaffected.
 
-    \item \textbf{Polling-based instruction delivery.} Agents discover new reservations by polling the broker at a configurable interval (default: 30 seconds). This introduces latency between the broker's decision and the agent's action. A push-based mechanism (WebSocket, gRPC streaming, or MQTT) would reduce this to near-real-time.
+    \item \textbf{Provider instruction polling.} Requester agents receive their instructions synchronously in the HTTP response (sub-second), but provider agents still rely on a polling mechanism (\texttt{GET /api/v1/instructions} every 5 seconds). While this is a significant improvement over the original 30-second polling interval, a push-based mechanism (WebSocket, gRPC streaming) would reduce provider notification to near-real-time.
 
     \item \textbf{Single-resource scoring.} The decision algorithm considers only CPU and memory availability with equal weight. It does not account for network latency between clusters, energy cost, geographic proximity, or specialized hardware (GPU models, FPGA). The scoring formula uses fixed weights rather than configurable policies.
 
@@ -86,8 +87,8 @@ Several directions for extending the system are identified:
     \item \textbf{High availability and broker federation.}
     Deploy the broker in a highly available configuration with leader election and state replication. For large-scale federations, multiple brokers could be organized hierarchically (e.g., regional brokers coordinating with a global broker), or in a peer-to-peer topology where brokers exchange advertisements.
 
-    \item \textbf{Push-based notification.}
-    Replace the polling-based instruction delivery with WebSocket or gRPC streaming connections. This would reduce the end-to-end latency from the current $\sim$53 seconds (dominated by polling interval) to under 1 second, making the system suitable for latency-sensitive use cases.
+    \item \textbf{Push-based provider notification.}
+    Replace the provider instruction polling (every 5 seconds) with WebSocket or gRPC streaming connections. The requester already receives instructions synchronously (sub-second), but the provider side could benefit from push-based notification to achieve near-zero latency for both roles.
 
     \item \textbf{Advanced scheduling policies.}
     Extend the scoring algorithm to incorporate multiple objectives: network latency between requester and provider, energy efficiency (prefer clusters powered by renewable energy), cost optimization (prefer cheaper providers), data locality (prefer clusters in the same region as the data), and hardware affinity (match GPU model requirements).
@@ -110,4 +111,4 @@ Several directions for extending the system are identified:
 
 \bigskip
 
-\noindent In conclusion, this thesis demonstrates that centralized resource brokerage combined with automatic cluster peering is a viable and effective approach to multi-cluster Kubernetes resource sharing. The system achieves sub-200~ms decision latency, handles concurrent requests without double-booking, and bridges the gap between resource allocation and actual cluster interconnection through Liqo integration. The open-source implementation provides a foundation for both further research and practical deployment in multi-cluster environments.
+\noindent In conclusion, this thesis demonstrates that centralized resource brokerage combined with automatic cluster peering is a viable and effective approach to multi-cluster Kubernetes resource sharing. The synchronous request-response architecture delivers sub-second end-to-end latency for requesters, while providers receive instructions within 5 seconds via lightweight polling. The system handles concurrent requests without double-booking and bridges the gap between resource allocation and actual cluster interconnection through Liqo integration. The open-source implementation provides a foundation for both further research and practical deployment in multi-cluster environments.

@@ -58,7 +58,7 @@ The system requirements are derived from the research objectives outlined in Cha
     All communication between agents and the broker must be authenticated and encrypted using mutual TLS (mTLS). Each cluster's identity is derived from its client certificate Common Name (CN), eliminating the need for separate authentication tokens.
 
     \item \textbf{Scalability.}
-    The system must support at least 20 simultaneously connected clusters with sub-second reservation latency. The broker's resource consumption must scale linearly with the number of connected agents.
+    The system must support up to 100 simultaneously connected clusters with sub-second reservation latency. The broker's resource consumption must scale linearly with the number of connected agents.
 
     \item \textbf{Consistency Under Concurrency.}
     Multiple simultaneous reservation requests must be handled without double-booking resources. The \texttt{Reserved} field mechanism must guarantee that the same capacity is never allocated to more than one requester.
@@ -141,7 +141,7 @@ The broker is the central coordination point of the system, deployed as a Kubern
     \item \textbf{Advertisement reception:} Receives and stores resource advertisements from all connected agents as \texttt{ClusterAdvertisement} Custom Resources.
     \item \textbf{Reservation processing:} When a \texttt{Reservation} is created, the broker's controller invokes the decision engine to select the best provider cluster.
     \item \textbf{Resource locking:} Updates the \texttt{Reserved} field in the selected provider's advertisement to prevent double-booking.
-    \item \textbf{Instruction generation:} Returns \texttt{ReservationInstruction} and \texttt{ProviderInstruction} objects when agents poll for new reservations.
+    \item \textbf{Instruction generation:} Returns a \texttt{ReservationInstruction} to the requester synchronously in the reservation response, and exposes a \texttt{GET /api/v1/instructions} endpoint for providers to poll for their \texttt{ProviderInstruction} objects.
     \item \textbf{Score calculation:} Computes and maintains a score for each cluster advertisement based on resource availability.
 \end{itemize}
 
@@ -154,7 +154,8 @@ The agent is deployed in each participating cluster and operates as a Kubernetes
 \begin{itemize}
     \item \textbf{Resource collection:} Monitors local nodes and pods to calculate CPU, memory, and GPU availability using the formula defined in Section~\ref{sec:resource-calculation}.
     \item \textbf{Advertisement publishing:} Periodically sends the collected metrics to the broker, preserving the \texttt{Reserved} field set by the broker to avoid overwriting locked resources.
-    \item \textbf{Reservation polling:} Queries the broker for pending reservations involving this cluster, either as requester or provider.
+    \item \textbf{Synchronous reservation:} When a user creates a \texttt{ResourceRequest} CRD, the agent sends a \texttt{POST /api/v1/reservations} to the broker and receives the reservation decision and instruction synchronously in the HTTP response.
+    \item \textbf{Instruction polling:} A lightweight poller queries \texttt{GET /api/v1/instructions} every 5 seconds to discover \texttt{ProviderInstruction} objects when this cluster has been selected as a provider.
     \item \textbf{Instruction management:} Creates local \texttt{ReservationInstruction} or \texttt{ProviderInstruction} CRDs based on broker responses.
     \item \textbf{Liqo peering:} When a \texttt{ReservationInstruction} is received, the agent automatically triggers \texttt{liqoctl peer} to establish network peering with the provider cluster.
 \end{itemize}
@@ -183,22 +184,25 @@ The system uses Kubernetes Custom Resource Definitions (CRDs) as its primary dat
 \node[crd, fill=green!15, below=3cm of cadv] (ri) {ReservationInstruction};
 \node[crd, fill=orange!15, below=3cm of res] (pi) {ProviderInstruction};
 \node[crd, fill=gray!15, left=3cm of cadv] (adv) {Advertisement};
+\node[crd, fill=green!15, left=3cm of res] (rr) {ResourceRequest};
 
 % Arrows
 \draw[arrow] (adv) -- node[above, font=\footnotesize\itshape] {publishes to} (cadv);
+\draw[arrow] (rr) -- node[above, font=\footnotesize\itshape] {triggers} (res);
 \draw[arrow] (res) -- node[right, font=\footnotesize\itshape, align=center] {locks resources\\in} (cadv);
 \draw[arrow] (res) -- node[right, font=\footnotesize\itshape, align=center] {generates} (pi);
 \draw[arrow] (res) -- node[left, font=\footnotesize\itshape, align=center] {generates} (ri);
 
 % Labels
 \node[font=\footnotesize\itshape, below=0.1cm of adv] {(Agent cluster)};
+\node[font=\footnotesize\itshape, below=0.1cm of rr] {(Requester cluster)};
 \node[font=\footnotesize\itshape, below=0.1cm of cadv] {(Broker cluster)};
 \node[font=\footnotesize\itshape, below=0.1cm of res] {(Broker cluster)};
 \node[font=\footnotesize\itshape, below=0.1cm of ri] {(Requester cluster)};
 \node[font=\footnotesize\itshape, below=0.1cm of pi] {(Provider cluster)};
 
 \end{tikzpicture}
-\caption{CRD relationships. The agent's local Advertisement is published to the broker as a ClusterAdvertisement. Reservations lock resources in the advertisement and generate instructions for both sides.}
+\caption{CRD relationships. The agent's local Advertisement is published to the broker as a ClusterAdvertisement. A ResourceRequest on the requester cluster triggers a Reservation on the broker, which locks resources and generates instructions for both sides.}
 \label{fig:data-model}
 \end{figure}
 
@@ -346,6 +350,34 @@ After a reservation reaches the \textit{Reserved} phase, the system generates tw
 \end{table}
 
 
+% -----------------------------------------------------------------------------
+\subsection{ResourceRequest}
+\label{subsec:resource-request}
+
+The \texttt{ResourceRequest} CRD is the user-facing entry point for requesting resources. It resides in the requester's agent cluster and triggers the synchronous reservation flow.
+
+\begin{table}[htbp]
+\centering
+\caption{\texttt{ResourceRequest} fields}
+\label{tab:resource-request}
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Description} \\
+\midrule
+\texttt{cpu} & Quantity & Requested CPU (e.g., ``500m'') \\
+\texttt{memory} & Quantity & Requested memory (e.g., ``256Mi'') \\
+\texttt{priority} & int32 & Optional priority (higher = more important) \\
+\texttt{status.phase} & string & Current phase: Pending, Reserved, Failed \\
+\texttt{status.targetClusterID} & string & Provider cluster selected by the broker \\
+\texttt{status.reservationName} & string & Broker-side Reservation name \\
+\texttt{status.message} & string & Human-readable status message \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+When a user creates a \texttt{ResourceRequest}, the agent's \texttt{ResourceRequestReconciler} sends a synchronous \texttt{POST /api/v1/reservations} to the broker. The broker processes the request inline---running the decision engine, locking resources, and creating the reservation---then returns the result in the HTTP response. The agent updates the \texttt{ResourceRequest} status with the broker's decision and creates a local \texttt{ReservationInstruction} if the reservation was successful.
+
+
 % =============================================================================
 \section{Resource Calculation}
 \label{sec:resource-calculation}
@@ -490,13 +522,16 @@ The broker exposes a REST API over HTTPS. Table~\ref{tab:api-endpoints} lists th
 \midrule
 \texttt{POST} & \texttt{/api/v1/advertisements} & Submit or update a cluster advertisement. The broker preserves the \texttt{Reserved} field. \\
 \texttt{GET} & \texttt{/api/v1/advertisements/\{id\}} & Retrieve a specific cluster's advertisement (including the \texttt{Reserved} field set by the broker). \\
-\texttt{GET} & \texttt{/api/v1/reservations} & Poll for reservations. Query parameters: \texttt{clusterID} and \texttt{role} (\texttt{requester} or \texttt{provider}). \\
+\texttt{POST} & \texttt{/api/v1/reservations} & Create a reservation request. The broker processes the request synchronously and returns the reservation decision and instruction in the response. \\
+\texttt{GET} & \texttt{/api/v1/instructions} & Poll for provider instructions. Returns pending \texttt{ProviderInstruction} objects for the calling cluster (identified by mTLS certificate CN). \\
 \texttt{GET} & \texttt{/healthz} & Health check endpoint (no authentication required). \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The agent-broker interaction follows a \textbf{poll-based} model. Agents periodically publish their advertisement (every 10--30 seconds) and simultaneously poll for new reservations. This design avoids the need for the broker to maintain persistent connections or push notifications, simplifying deployment and firewall configuration.
+The agent-broker interaction follows a \textbf{synchronous request-response} model for reservations and a \textbf{lightweight polling} model for provider instructions. When a user creates a \texttt{ResourceRequest}, the agent sends a \texttt{POST /api/v1/reservations} to the broker, which processes the request inline---invoking the decision engine, locking resources, and returning the reservation result and instruction in the HTTP response. This eliminates polling latency for the requester: the instruction is available immediately.
+
+For provider clusters, a separate \texttt{InstructionPoller} queries \texttt{GET /api/v1/instructions} every 5 seconds, discovering new provider instructions with minimal delay. Agents continue to publish advertisements periodically (every 30 seconds) to keep the broker's resource view current.
 
 Figure~\ref{fig:sequence} shows the complete reservation flow.
 
@@ -516,45 +551,46 @@ Figure~\ref{fig:sequence} shows the complete reservation flow.
 \node[actor=orange!15] (a2) at (11, 0) {Agent 2};
 
 % Lifelines
-\draw[gray, thin] (0, -0.4) -- (0, -11);
-\draw[gray, thin] (5.5, -0.4) -- (5.5, -11);
-\draw[gray, thin] (11, -0.4) -- (11, -11);
+\draw[gray, thin] (0, -0.4) -- (0, -12);
+\draw[gray, thin] (5.5, -0.4) -- (5.5, -12);
+\draw[gray, thin] (11, -0.4) -- (11, -12);
 
 % Step 1: Publish advertisements
 \draw[arrow, blue!60] (0, -1) -- node[above, note] {POST /advertisements} (5.5, -1);
 \draw[arrow, orange!60] (11, -1.5) -- node[above, note] {POST /advertisements} (5.5, -1.5);
 \node[note, anchor=east] at (-0.3, -1.25) {1. Publish};
 
-% Step 2: Create reservation
+% Step 2: User creates ResourceRequest
 \node[note, anchor=east] at (-0.3, -2.5) {2. User creates};
-\node[note, anchor=west] at (5.8, -2.5) {Reservation created};
+\node[note, anchor=west] at (0.2, -2.9) {\footnotesize ResourceRequest CRD};
 
-% Step 3: Decision
-\node[rectangle, draw, fill=blue!10, font=\footnotesize, inner sep=3pt] at (5.5, -3.5) {Decision Engine};
-\node[note, anchor=east] at (-0.3, -3.5) {3. Select provider};
+% Step 3: Synchronous reservation request + decision + response
+\draw[arrow, blue!60] (0, -3.5) -- node[above, note] {POST /reservations} (5.5, -3.5);
+\node[rectangle, draw, fill=blue!10, font=\footnotesize, inner sep=3pt] at (5.5, -4.3) {Decision Engine};
+\node[note, anchor=west] at (5.8, -5.0) {Reserved += requested};
+\draw[dashedarrow, blue!60] (5.5, -5.5) -- node[above, note] {200 OK + ReservationInstruction} (0, -5.5);
+\node[note, anchor=east] at (-0.3, -4.5) {3. Synchronous};
 
-% Step 4: Lock resources
-\node[note, anchor=east] at (-0.3, -4.5) {4. Lock resources};
-\node[note, anchor=west] at (5.8, -4.5) {Reserved += requested};
-
-% Step 5: Poll + instructions
-\draw[arrow, blue!60] (0, -5.5) -- node[above, note] {GET /reservations?role=requester} (5.5, -5.5);
-\draw[dashedarrow, blue!60] (5.5, -6) -- node[above, note] {ReservationInstruction} (0, -6);
-\node[note, anchor=east] at (-0.3, -5.75) {5. Poll};
-
-\draw[arrow, orange!60] (11, -6.5) -- node[above, note] {GET /reservations?role=provider} (5.5, -6.5);
+% Step 4: Provider polls for instructions
+\draw[arrow, orange!60] (11, -6.5) -- node[above, note] {GET /instructions} (5.5, -6.5);
 \draw[dashedarrow, orange!60] (5.5, -7) -- node[above, note] {ProviderInstruction} (11, -7);
+\node[note, anchor=east] at (13.5, -6.75) {\footnotesize (every 5s)};
+\node[note, anchor=east] at (-0.3, -6.75) {4. Provider poll};
 
-% Step 6: Liqo peering
+% Step 5: Liqo peering
 \draw[arrow, purple!60, double, double distance=1pt] (0, -8.5) -- node[above, note] {liqoctl peer (WireGuard)} (11, -8.5);
-\node[note, anchor=east] at (-0.3, -8.5) {6. Auto-peer};
+\node[note, anchor=east] at (-0.3, -8.5) {5. Auto-peer};
 
-% Step 7: Virtual node
+% Step 6: Virtual node
 \node[rectangle, draw, dashed, fill=green!10, font=\footnotesize, inner sep=3pt] at (0, -9.5) {Virtual Node created};
-\node[note, anchor=east] at (-0.3, -9.5) {7. Offload ready};
+\node[note, anchor=east] at (-0.3, -9.5) {6. Offload ready};
+
+% Timing annotations
+\node[rectangle, draw, fill=green!5, font=\footnotesize, inner sep=3pt, text width=3cm, align=center] at (0, -10.8) {Requester: instant\\($<$1s end-to-end)};
+\node[rectangle, draw, fill=orange!5, font=\footnotesize, inner sep=3pt, text width=3cm, align=center] at (11, -10.8) {Provider: $\leq$5s\\(poll interval)};
 
 \end{tikzpicture}
-\caption{Reservation flow sequence. Numbers indicate the order of operations from advertisement publishing through Liqo peering.}
+\caption{Reservation flow sequence. The requester receives its instruction synchronously in the \texttt{POST /reservations} response (step~3). The provider discovers its instruction by polling \texttt{GET /instructions} every 5 seconds (step~4).}
 \label{fig:sequence}
 \end{figure}
 

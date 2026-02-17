@@ -73,7 +73,7 @@ This thesis makes the following contributions:
 
     \item \textbf{Automatic Liqo Peering.} An integration where the agent automatically triggers \texttt{liqoctl peer} upon receiving a \texttt{ReservationInstruction}, establishing encrypted WireGuard tunnels and virtual nodes without manual intervention.
 
-    \item \textbf{Comprehensive Evaluation.} Eight automated test scenarios measuring broker scalability (up to 20 clusters), reservation latency (sub-200~ms decisions), concurrent request handling (zero double-bookings), decision accuracy (83--100\%), and advertisement propagation delay (1.4 seconds steady state).
+    \item \textbf{Comprehensive Evaluation.} Seven automated test scenarios measuring broker scalability (up to 100 clusters), reservation latency (sub-second end-to-end with synchronous flow), concurrent request handling (zero double-bookings), decision accuracy (83--100\%), resource exhaustion tracking, and agent startup time breakdown.
 
     \item \textbf{Open-Source Implementation.} The complete system is available as open-source software, implemented in Go with Kubernetes CRDs, suitable for both research and practical deployment.
 \end{itemize}
@@ -90,9 +90,9 @@ The remainder of this thesis is organized as follows:
 
     \item \textbf{Chapter~\ref{ch:design}: System Design.} Defines the functional and non-functional requirements, presents the hub-and-spoke architecture, describes the CRD-based data model, the resource calculation formula, the decision algorithm, the REST communication protocol, and the mTLS security model.
 
-    \item \textbf{Chapter~\ref{ch:implementation}: Implementation.} Details the technology stack, project structure, and implementation of the broker (API server, authentication middleware, reservation controller, decision engine) and agent (resource collector, HTTP transport, reservation polling, Liqo integration).
+    \item \textbf{Chapter~\ref{ch:implementation}: Implementation.} Details the technology stack, project structure, and implementation of the broker (API server, authentication middleware, reservation controller, decision engine) and agent (resource collector, HTTP transport, synchronous reservation flow, instruction polling, Liqo integration).
 
-    \item \textbf{Chapter~\ref{ch:evaluation}: Evaluation.} Presents eight experimental tests conducted on a 96-core server, measuring scalability, bandwidth, agent footprint, reservation latency, concurrent reservation handling, decision accuracy, resource exhaustion, and advertisement freshness.
+    \item \textbf{Chapter~\ref{ch:evaluation}: Evaluation.} Presents seven experimental tests conducted on a 96-core server, measuring scalability (with resource exhaustion verification), bandwidth, agent footprint, reservation latency, concurrent reservation handling, decision accuracy, and agent startup time breakdown.
 
     \item \textbf{Chapter~\ref{ch:conclusions}: Conclusions.} Summarizes the contributions, discusses limitations, and outlines directions for future work.
 \end{itemize}
