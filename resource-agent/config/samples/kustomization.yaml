@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- rear_v1alpha1_advertisement.yaml
+- rear_v1alpha1_reservationinstruction.yaml
+- rear_v1alpha1_providerinstruction.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

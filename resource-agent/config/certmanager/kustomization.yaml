@@ -1,0 +1,18 @@
+# cert-manager configuration for agent certificates
+# Prerequisites:
+#   1. cert-manager must be installed in the cluster
+#   2. The broker's CA issuer must be available (liqo-broker-ca-issuer)
+#
+# Note: The CA issuer is typically created in the broker cluster. For agents
+# in separate clusters, you need to either:
+#   a) Copy the CA Secret to the agent cluster and create a local issuer
+#   b) Use a shared CA (e.g., Vault, external PKI)
+#
+# Usage:
+#   kubectl apply -k config/certmanager/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - agent-certificate.yaml

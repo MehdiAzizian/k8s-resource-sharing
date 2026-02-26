@@ -1,0 +1,58 @@
+# =============================================================================
+# Broker Server Certificate
+# =============================================================================
+# This certificate is used by the broker's HTTP REST API server for mTLS.
+# The certificate includes DNS names for in-cluster and local access.
+#
+# The resulting Secret (broker-server-tls) contains:
+#   - tls.crt: Server certificate
+#   - tls.key: Private key
+#   - ca.crt:  CA certificate (for client verification)
+# =============================================================================
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: broker-server-cert
+  namespace: system  # Same namespace as broker deployment
+spec:
+  secretName: broker-server-tls
+
+  # Certificate validity
+  duration: 8760h     # 1 year
+  renewBefore: 720h   # Renew 30 days before expiry
+
+  # Subject
+  commonName: liqo-resource-broker
+  subject:
+    organizations:
+      - LiqoResourceBroker
+
+  # DNS names for the broker service
+  dnsNames:
+    - liqo-resource-broker
+    - liqo-resource-broker.system
+    - liqo-resource-broker.system.svc
+    - liqo-resource-broker.system.svc.cluster.local
+    - localhost
+    # Add external DNS name if broker is exposed outside cluster
+    # - broker.example.com
+
+  # IP addresses (for direct IP access)
+  ipAddresses:
+    - 127.0.0.1
+
+  # Key usages for server authentication
+  usages:
+    - server auth
+    - client auth  # Also allow broker to act as client if needed
+
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+  # Sign with our CA
+  issuerRef:
+    name: liqo-broker-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io

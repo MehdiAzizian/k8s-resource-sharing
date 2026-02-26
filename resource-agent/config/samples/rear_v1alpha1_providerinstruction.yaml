@@ -1,0 +1,11 @@
+apiVersion: rear.fluidos.eu/v1alpha1
+kind: ProviderInstruction
+metadata:
+  name: demo-provider
+  namespace: default
+spec:
+  reservationName: example-reservation
+  requesterClusterID: "rome"
+  requestedCPU: "4"
+  requestedMemory: "8Gi"
+  message: "Hold 4 CPU / 8Gi for rome"

@@ -1,0 +1,74 @@
+# =============================================================================
+# Agent Client Certificate (Example)
+# =============================================================================
+# This is an EXAMPLE certificate for an agent. In production, each agent
+# cluster would have its own Certificate resource with a unique cluster ID.
+#
+# IMPORTANT: The CommonName (CN) is used as the cluster identifier!
+# The broker extracts the cluster ID from the certificate CN field.
+#
+# To create certificates for additional agents, copy this file and change:
+#   - metadata.name: agent-cluster-2-cert
+#   - spec.secretName: agent-cluster-2-tls
+#   - spec.commonName: cluster-2  <-- THIS IS THE CLUSTER ID
+# =============================================================================
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: agent-cluster-1-cert
+  namespace: system  # Or the namespace where agent runs
+spec:
+  secretName: agent-cluster-1-tls
+
+  # Certificate validity
+  duration: 8760h     # 1 year
+  renewBefore: 720h   # Renew 30 days before expiry
+
+  # CRITICAL: CommonName is the cluster identifier
+  # The broker uses this to identify which cluster sent the request
+  commonName: cluster-1
+  subject:
+    organizations:
+      - LiqoResourceBroker
+
+  # Key usages for client authentication only
+  usages:
+    - client auth
+
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+  # Sign with our CA
+  issuerRef:
+    name: liqo-broker-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+
+---
+# Example: Second agent certificate
+# Uncomment and modify for additional agents
+#
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: agent-cluster-2-cert
+#   namespace: system
+# spec:
+#   secretName: agent-cluster-2-tls
+#   duration: 8760h
+#   renewBefore: 720h
+#   commonName: cluster-2  # <-- Different cluster ID
+#   subject:
+#     organizations:
+#       - LiqoResourceBroker
+#   usages:
+#     - client auth
+#   privateKey:
+#     algorithm: RSA
+#     size: 2048
+#   issuerRef:
+#     name: liqo-broker-ca-issuer
+#     kind: ClusterIssuer
+#     group: cert-manager.io

@@ -1,0 +1,15 @@
+# cert-manager configuration for automatic certificate management
+# Prerequisites: cert-manager must be installed in the cluster
+#   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.0/cert-manager.yaml
+#
+# Usage:
+#   kubectl apply -k config/certmanager/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - issuer.yaml
+  - broker-certificate.yaml
+  # Uncomment to create example agent certificates (for testing)
+  # - agent-certificate.yaml

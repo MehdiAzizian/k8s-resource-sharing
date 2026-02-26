@@ -1,0 +1,27 @@
+apiVersion: broker.fluidos.eu/v1alpha1
+kind: ClusterAdvertisement
+metadata:
+  name: cluster-1-adv
+  namespace: default
+spec:
+  clusterID: "cluster-1-abc123"
+  clusterName: "Production Cluster 1"
+  resources:
+    capacity:
+      cpu: "16"
+      memory: "32Gi"
+    allocatable:
+      cpu: "15"
+      memory: "30Gi"
+    allocated:
+      cpu: "5"
+      memory: "10Gi"
+    available:
+      cpu: "10"
+      memory: "20Gi"
+  cost:
+    cpuCost: "0.05"
+    memoryCost: "0.01"
+    currency: "USD"
+  timestamp: "2025-11-19T13:24:56Z"
+  endpointURL: "https://cluster1.example.com"

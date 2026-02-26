@@ -1,0 +1,12 @@
+apiVersion: broker.fluidos.eu/v1alpha1
+kind: Reservation
+metadata:
+  name: reservation-test
+  namespace: default
+spec:
+  requestedResources:
+    cpu: "2"
+    memory: "4Gi"
+  priority: 10
+  requesterID: "user-123"
+  duration: "1h"
